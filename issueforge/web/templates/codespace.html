@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Issueforge Agent Studio | {{ task.title }}</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Vendored xterm.js -->
+    <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+    <script src="/static/vendor/xterm/xterm.js"></script>
+    <script src="/static/vendor/xterm/xterm-addon-fit.js"></script>
+    <script src="/static/vendor/xterm/xterm-addon-web-links.js"></script>
+    <link rel="stylesheet" href="/static/css/custom.css">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkbg: '#0d1117',
+                        sidebg: '#161b22',
+                        panelborder: '#30363d',
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-[#0d1117] text-slate-100 h-screen w-screen flex flex-col font-sans antialiased overflow-hidden select-none">
+
+    <!-- Top Codespace Navbar -->
+    <header class="bg-[#161b22] border-b border-[#30363d] h-12 px-4 flex items-center justify-between shrink-0 z-20">
+        <div class="flex items-center space-x-3 overflow-hidden">
+            <a href="/tasks/{{ task.id }}" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-2.5 py-1 rounded border border-slate-700 transition flex items-center space-x-1 shrink-0" title="Return to Task Overview">
+                <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
+                <span class="font-medium">Dashboard</span>
+            </a>
+            <div class="h-4 w-[1px] bg-slate-700 shrink-0"></div>
+            <div class="flex items-center space-x-2 truncate">
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
+                <span class="font-mono text-xs font-bold text-cyan-400 shrink-0">{{ task.id }}</span>
+                <span class="text-xs font-semibold text-slate-200 truncate">{{ task.title }}</span>
+            </div>
+            <div class="hidden sm:flex items-center space-x-1.5 shrink-0 ml-2">
+                <span class="text-[11px] font-mono bg-slate-900 border border-slate-700 px-2 py-0.5 rounded text-purple-300 flex items-center space-x-1">
+                    <i data-lucide="git-branch" class="w-3 h-3 text-purple-400"></i>
+                    <span>{{ task.selected_target_branch or task.base_branch or 'main' }}</span>
+                </span>
+            </div>
+        </div>
+
+        <div class="flex items-center space-x-3 shrink-0">
+            <!-- Run Selector Dropdown -->
+            <div class="flex items-center space-x-1.5 text-xs text-slate-400 font-mono">
+                <span class="hidden md:inline">Workspace:</span>
+                <select id="codespaceRunSelect" onchange="switchCodespaceRun('{{ task.id }}', this.value)" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-cyan-300 font-mono focus:outline-none focus:border-cyan-500">
+                    {% if task.runs and task.runs|length > 0 %}
+                        {% for r in task.runs %}
+                        <option value="{{ r.run_id }}" {% if r.run_id == active_run %}selected{% endif %}>
+                            #{{ r.attempt_number }} {{ r.run_id }} ({{ r.status.value }})
+                        </option>
+                        {% endfor %}
+                    {% else %}
+                        <option value="run-1" selected>#1 run-1 (Active)</option>
+                    {% endif %}
+                </select>
+            </div>
+
+            <!-- Task Status Badge -->
+            <span class="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold border {% if task.status.value == 'COMPLETED' %}bg-emerald-500/20 text-emerald-300 border-emerald-500/30{% elif task.status.value == 'FAILED' %}bg-rose-500/20 text-rose-300 border-rose-500/30{% else %}bg-cyan-500/20 text-cyan-300 border-cyan-500/30 animate-pulse{% endif %}">
+                {{ task.status.value }}
+            </span>
+        </div>
+    </header>
+
+    <!-- Main Studio Body: File Tree | Editor | Live Agent Terminal & Steering -->
+    <main class="flex-1 flex overflow-hidden">
+        
+        <!-- Left Sidebar: File Tree Explorer -->
+        <aside class="w-64 md:w-72 bg-[#161b22] border-r border-[#30363d] flex flex-col shrink-0">
+            <div class="px-3 py-2.5 border-b border-[#30363d] flex items-center justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider">
+                <div class="flex items-center space-x-1.5 text-slate-300">
+                    <i data-lucide="folder-git-2" class="w-3.5 h-3.5 text-emerald-400"></i>
+                    <span>Files & Sandbox Tree</span>
+                </div>
+                <button onclick="refreshFileTree('{{ task.id }}', window.currentActiveRunId || '{{ active_run }}')" title="Reload file tree" class="hover:text-white p-1 rounded hover:bg-slate-800 transition">
+                    <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                </button>
+            </div>
+
+            <!-- Search Filter Bar -->
+            <div class="p-2 border-b border-[#30363d] bg-slate-900/40">
+                <div class="relative">
+                    <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-2 text-slate-500"></i>
+                    <input type="text" id="studioFileSearch" oninput="filterStudioFileTree(this.value)" placeholder="Search files (e.g. .py, test)..." class="w-full bg-[#0d1117] border border-[#30363d] rounded pl-8 pr-2.5 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition font-sans">
+                </div>
+            </div>
+
+            <!-- Recursive File Tree List -->
+            <div id="studioFileTreeList" class="flex-1 overflow-y-auto p-2 space-y-0.5 font-mono text-xs text-slate-300 select-none">
+                <div class="text-slate-500 italic p-3 text-center">Loading sandbox workspace files...</div>
+            </div>
+
+            <!-- Workspace Info Footer -->
+            <div class="p-2 border-t border-[#30363d] bg-slate-950/60 text-[11px] font-mono text-slate-400 flex items-center justify-between">
+                <span class="truncate">Jetson Native Workspace</span>
+                <span id="studioFileCount" class="text-emerald-400 font-bold"></span>
+            </div>
+        </aside>
+
+        <!-- Center: Tabbed Editor & Diff Viewer -->
+        <section class="flex-1 flex flex-col bg-[#0d1117] overflow-hidden border-r border-[#30363d]">
+            <!-- Editor Top Tab Bar -->
+            <div class="h-10 bg-[#161b22] border-b border-[#30363d] px-2 flex items-center justify-between shrink-0 overflow-x-auto no-scrollbar" id="studioTabsHeader">
+                <div id="studioTabsList" class="flex items-center space-x-1 overflow-x-auto no-scrollbar py-1">
+                    <!-- Dynamic File Tabs rendered here -->
+                </div>
+                <div class="flex items-center space-x-2 shrink-0 ml-2">
+                    <!-- View Mode Toggle: Live Editor vs Diff View -->
+                    <div class="flex items-center bg-slate-900 border border-[#30363d] rounded p-0.5 text-xs">
+                        <button id="studioModeCodeBtn" onclick="switchStudioViewMode('code')" class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-600 text-white transition flex items-center space-x-1">
+                            <i data-lucide="code" class="w-3.5 h-3.5"></i>
+                            <span>Editor</span>
+                        </button>
+                        <button id="studioModeDiffBtn" onclick="switchStudioViewMode('diff')" class="px-2 py-0.5 rounded text-xs font-semibold text-slate-400 hover:text-white transition flex items-center space-x-1">
+                            <i data-lucide="git-commit" class="w-3.5 h-3.5"></i>
+                            <span>Diff View</span>
+                        </button>
+                    </div>
+                    <button id="studioSaveFileBtn" onclick="saveActiveFile('{{ task.id }}', window.currentActiveRunId || '{{ active_run }}')" class="hidden text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-2.5 py-1 rounded transition flex items-center space-x-1 shadow-sm">
+                        <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                        <span>Save File</span>
+                        <span class="text-[10px] opacity-75">(Ctrl+S)</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Path Bar & Save Status -->
+            <div class="h-7 bg-slate-900/60 border-b border-[#30363d] px-3 flex items-center justify-between shrink-0 text-xs font-mono">
+                <div class="flex items-center space-x-2 truncate">
+                    <i data-lucide="file-code" class="w-3.5 h-3.5 text-cyan-400 shrink-0"></i>
+                    <span id="studioFilePathLabel" class="text-slate-300 font-semibold truncate">Select a file from the explorer</span>
+                    <span id="studioSaveStatus" class="hidden text-[10px] text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.2 rounded">Saved</span>
+                </div>
+                <div class="flex items-center space-x-2 text-[11px] text-slate-400">
+                    <span id="studioFileMetaInfo"></span>
+                </div>
+            </div>
+
+            <!-- Code Editor & Diff Body -->
+            <div class="flex-1 relative flex flex-col overflow-hidden">
+                <div id="studioEmptyNotice" class="flex-1 flex flex-col items-center justify-center text-slate-500 p-6 text-center select-none">
+                    <i data-lucide="code" class="w-12 h-12 stroke-[1.2] mb-3 text-slate-600"></i>
+                    <p class="text-sm font-medium text-slate-400">No file opened</p>
+                    <p class="text-xs text-slate-500 mt-1 max-w-sm">Select any file from the explorer tree or wait for the agent to start editing. Files open in tabs with live diff tracking.</p>
+                </div>
+
+                <!-- Code Editor View -->
+                <div id="studioEditorWrapper" class="hidden flex-1 flex flex-col h-full w-full overflow-hidden">
+                    <textarea id="studioEditorTextarea" class="flex-1 w-full bg-[#0d1117] text-slate-200 font-mono text-xs p-4 leading-relaxed focus:outline-none resize-none overflow-y-auto selection:bg-emerald-500/30" spellcheck="false"></textarea>
+                </div>
+
+                <!-- Unified Diff View -->
+                <div id="studioDiffWrapper" class="hidden flex-1 flex flex-col h-full w-full overflow-y-auto bg-[#0d1117] font-mono text-xs p-4">
+                    <div id="studioDiffContainer" class="space-y-0.5">
+                        <div class="text-slate-500 italic">No modifications detected relative to base branch.</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Right Panel: Dual-View Live AGY Session (Rich Stream & xterm.js) & Co-Pilot Steering -->
+        <section class="w-96 lg:w-[480px] bg-[#161b22] flex flex-col shrink-0 overflow-hidden">
+            <!-- Dual-View Switcher Header -->
+            <div class="h-10 px-3 border-b border-[#30363d] flex items-center justify-between shrink-0">
+                <div class="flex items-center bg-slate-900 border border-[#30363d] rounded p-0.5 text-xs">
+                    <button id="streamTabRichBtn" onclick="switchRightPaneView('rich')" class="px-2.5 py-0.5 rounded text-xs font-semibold bg-purple-600 text-white transition flex items-center space-x-1.5 shadow-sm">
+                        <i data-lucide="sparkles" class="w-3.5 h-3.5 text-purple-200"></i>
+                        <span>AGY Rich Stream</span>
+                    </button>
+                    <button id="streamTabTermBtn" onclick="switchRightPaneView('term')" class="px-2.5 py-0.5 rounded text-xs font-semibold text-slate-400 hover:text-white transition flex items-center space-x-1.5">
+                        <i data-lucide="terminal" class="w-3.5 h-3.5"></i>
+                        <span>Live Agent Session (AGY)</span>
+                    </button>
+                </div>
+
+                <div class="flex items-center space-x-2">
+                    <span id="codespaceStatusDot" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span id="codespaceRoleBadge" class="text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded font-mono">4-Agent Swarm</span>
+                </div>
+            </div>
+
+            <!-- View 1: AGY Rich Stream (Default) -->
+            <div id="studioRichStreamContainer" class="flex-1 p-3 bg-[#0d1117] overflow-y-auto space-y-3 font-sans text-xs">
+                <div id="richStreamWelcome" class="p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-slate-400 space-y-1">
+                    <div class="flex items-center space-x-1.5 text-purple-400 font-semibold">
+                        <i data-lucide="bot" class="w-4 h-4"></i>
+                        <span>Autonomous AGY 4-Agent Swarm</span>
+                    </div>
+                    <p class="text-[11px] text-slate-400">Agents plan, code, test, and review in the Jetson native sandbox. Watch live actions below or direct them anytime with the prompt bar.</p>
+                </div>
+                <div id="richStreamCardsList" class="space-y-2.5">
+                    <!-- Dynamically rendered agent cards, user directives, tool calls, and test results -->
+                </div>
+            </div>
+
+            <!-- View 2: xterm.js Terminal Container (Toggleable) -->
+            <div id="terminalXtermContainer" class="hidden flex-1 p-3 bg-[#0d1117] overflow-hidden relative">
+                <div id="xtermMount" class="w-full h-full"></div>
+            </div>
+
+            <!-- Interactive Bi-Directional Prompt & Steering Channel -->
+            <div class="bg-[#161b22] border-t border-[#30363d] p-3 flex flex-col space-y-2 shrink-0">
+                <div class="flex items-center justify-between text-amber-400 text-xs font-semibold">
+                    <div class="flex items-center space-x-1.5">
+                        <i data-lucide="compass" class="w-3.5 h-3.5"></i>
+                        <span>Co-Pilot Mid-Flight Steering</span>
+                    </div>
+                    <span id="codespaceAgentStatusPill" class="text-[10px] text-slate-400 font-normal">Active session channel</span>
+                </div>
+                <div class="flex gap-2">
+                    <input type="text" id="steeringDirectiveInput" placeholder="Direct agents: 'Focus on auth endpoints', 'Use PostgreSQL'..." class="flex-1 bg-[#0d1117] border border-[#30363d] text-slate-200 text-xs rounded px-3 py-1.5 focus:outline-none focus:border-amber-500 font-sans transition placeholder-slate-500">
+                    <button onclick="submitSteeringDirective('{{ task.id }}')" id="steerBtn" class="bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold px-3 py-1.5 rounded transition flex items-center space-x-1 shadow-sm shrink-0">
+                        <i data-lucide="send" class="w-3 h-3"></i>
+                        <span>Send</span>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Global Toast Container -->
+    <div id="toastContainer" class="fixed bottom-4 right-4 z-50 flex flex-col space-y-2 pointer-events-none"></div>
+
+    <!-- Pass template parameters into window state -->
+    <script>
+        window.currentTaskId = "{{ task.id }}";
+        window.currentActiveRunId = "{{ active_run }}";
+    </script>
+    <script src="/static/js/dashboard.js"></script>
+    <script>
+        // Initialize Codespace workspace on load
+        document.addEventListener('DOMContentLoaded', () => {
+            if (window.lucide) lucide.createIcons();
+            
+            // 1. Initialize Codespace Studio (Tree, SSE, Rich Stream)
+            if (typeof initCodespaceStudio === 'function') {
+                initCodespaceStudio("{{ task.id }}", "{{ active_run }}");
+            } else {
+                refreshFileTree("{{ task.id }}", "{{ active_run }}");
+                if (typeof initXtermTerminal === 'function') {
+                    initXtermTerminal("{{ task.id }}", "{{ active_run }}");
+                }
+            }
+
+            // 2. Setup Keyboard Shortcut (Ctrl+S to save)
+            window.addEventListener('keydown', (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                    e.preventDefault();
+                    saveActiveFile("{{ task.id }}", window.currentActiveRunId || "{{ active_run }}");
+                }
+            });
+
+            // 3. Setup Steering Enter key listener
+            const steerInput = document.getElementById('steeringDirectiveInput');
+            if (steerInput) {
+                steerInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        submitSteeringDirective("{{ task.id }}");
+                    }
+                });
+            }
+        });
+
+        function switchCodespaceRun(taskId, runId) {
+            window.currentActiveRunId = runId;
+            if (typeof initCodespaceStudio === 'function') {
+                initCodespaceStudio(taskId, runId);
+            } else {
+                refreshFileTree(taskId, runId);
+                if (typeof initXtermTerminal === 'function') {
+                    initXtermTerminal(taskId, runId);
+                }
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+/* Custom Issueforge Styles */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: #0f172a;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+}
+
+/* Obsidian canvas node markdown (rendered natively in the dashboard) */
+.issueforge-canvas-node h3 { font-size: 15px; font-weight: 700; margin: 0 0 4px 0; color: #f1f5f9; }
+.issueforge-canvas-node p  { margin: 0 0 4px 0; }
+.issueforge-canvas-node em { color: #94a3b8; font-style: italic; }
+.issueforge-canvas-node strong { color: #e2e8f0; }
+.issueforge-canvas-node code { background: rgba(15,23,42,0.7); padding: 0 3px; border-radius: 3px; font-size: 13px; }
+.issueforge-canvas-node::-webkit-scrollbar { width: 4px; }
+.issueforge-canvas-node::-webkit-scrollbar-thumb { background: #475569; border-radius: 2px; }

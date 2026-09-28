@@ -1,0 +1,33 @@
+# Example systemd unit for Issueforge. Replace every YOUR_* / /path/to/* placeholder:
+#
+#   User=YOUR_USER           the account Issueforge (and its agents) run as. Agents get that
+#                            user's full permissions, so use a dedicated, unprivileged account.
+#   WorkingDirectory=...     the directory holding your .env (written by `issueforge init`);
+#                            settings are read from .env in the working directory.
+#   ExecStart=...            the `issueforge` entrypoint inside the virtualenv you installed into.
+#   Environment=PATH=...     must include that venv's bin, and `git` (plus `agy`, if you use it).
+#
+# Install: copy to /etc/systemd/system/issueforge.service, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now issueforge
+# The login URL (with the auto-generated token) is printed at start: journalctl -u issueforge
+
+[Unit]
+Description=Issueforge Autonomous Multi-LLM Git Agent & Telegram Orchestrator
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/dir/with/.env
+Environment="PATH=/path/to/venv/bin:/usr/local/bin:/usr/bin:/bin"
+# Loopback only (the default). To serve the LAN, set FORGE_AUTH_TOKEN in .env and use instead:
+# ExecStart=/path/to/venv/bin/issueforge start --host 0.0.0.0 --port 8000
+ExecStart=/path/to/venv/bin/issueforge start --port 8000
+Restart=always
+RestartSec=5s
+
+LimitNOFILE=65535
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | Issueforge Git Agent{% endblock %}
+
+{% block content %}
+<!-- Metric Cards -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+    <div class="bg-cardbg border border-bordercolor rounded-xl p-5 shadow-sm">
+        <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-amber-400 uppercase tracking-wider">Pending Approval</span>
+            <i data-lucide="clock" class="w-5 h-5 text-amber-400"></i>
+        </div>
+        <div class="mt-3 text-3xl font-bold text-white">{{ pending_count }}</div>
+        <p class="text-xs text-slate-400 mt-1">Awaiting Telegram / Web approval</p>
+    </div>
+
+    <div class="bg-cardbg border border-bordercolor rounded-xl p-5 shadow-sm">
+        <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-cyan-400 uppercase tracking-wider">Active in Sandbox</span>
+            <i data-lucide="cpu" class="w-5 h-5 text-cyan-400"></i>
+        </div>
+        <div class="mt-3 text-3xl font-bold text-white">{{ running_count }}</div>
+        <p class="text-xs text-slate-400 mt-1">Multi-LLM pipeline running</p>
+    </div>
+
+    <div class="bg-cardbg border border-bordercolor rounded-xl p-5 shadow-sm">
+        <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-purple-400 uppercase tracking-wider">Awaiting Confirm</span>
+            <i data-lucide="check-circle-2" class="w-5 h-5 text-purple-400"></i>
+        </div>
+        <div class="mt-3 text-3xl font-bold text-white">{{ awaiting_confirm_count }}</div>
+        <p class="text-xs text-slate-400 mt-1">Tests passed, ready to push PR</p>
+    </div>
+
+    <div class="bg-cardbg border border-bordercolor rounded-xl p-5 shadow-sm">
+        <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-emerald-400 uppercase tracking-wider">Completed</span>
+            <i data-lucide="git-pull-request" class="w-5 h-5 text-emerald-400"></i>
+        </div>
+        <div class="mt-3 text-3xl font-bold text-white">{{ completed_count }}</div>
+        <p class="text-xs text-slate-400 mt-1">Merged or PR open</p>
+    </div>
+</div>
+
+<!-- Header & Action Buttons -->
+<div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+    <div>
+        <h1 class="text-2xl font-bold text-white tracking-tight">Work Items & Tasks</h1>
+        <div class="flex items-center space-x-2 mt-0.5">
+            <p class="text-sm text-slate-400">Ingested issues, sprint work items, and pull requests</p>
+            {% if poller_status and poller_status.poll_enabled %}
+            <span class="text-xs text-slate-500">•</span>
+            <span class="text-xs text-emerald-400/80 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full flex items-center space-x-1">
+                <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+                <span>Auto-sync: every {{ poller_status.poll_interval_hours|int }}h</span>
+            </span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="flex items-center space-x-3">
+        <button id="syncBtn" onclick="triggerSync()" class="inline-flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white px-3.5 py-2.5 rounded-lg text-sm font-medium transition shadow-sm border border-slate-700">
+            <i id="syncIcon" data-lucide="refresh-cw" class="w-4 h-4"></i>
+            <span id="syncText">Sync Now</span>
+        </button>
+        <button onclick="openModal()" class="inline-flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition shadow-sm">
+            <i data-lucide="plus-circle" class="w-4 h-4"></i>
+            <span>Trigger New Task</span>
+        </button>
+    </div>
+</div>
+
+<!-- Tasks Table -->
+<div class="bg-cardbg border border-bordercolor rounded-xl overflow-hidden shadow-sm">
+    <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm text-slate-300">
+            <thead class="bg-slate-800/80 border-b border-bordercolor text-xs uppercase tracking-wider text-slate-400">
+                <tr>
+                    <th class="py-3.5 px-4 font-semibold">Task ID & Source</th>
+                    <th class="py-3.5 px-4 font-semibold">Title & Repository</th>
+                    <th class="py-3.5 px-4 font-semibold">Status</th>
+                    <th class="py-3.5 px-4 font-semibold">Created</th>
+                    <th class="py-3.5 px-4 font-semibold text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-bordercolor">
+                {% if not tasks %}
+                <tr>
+                    <td colspan="5" class="py-12 text-center text-slate-500">
+                        <div class="flex flex-col items-center">
+                            <i data-lucide="inbox" class="w-10 h-10 mb-2 stroke-1"></i>
+                            <p class="text-base font-medium text-slate-400">No tasks ingested yet</p>
+                            <p class="text-xs text-slate-500 mt-1">Tasks will appear automatically when GitHub/GitLab webhooks fire, or you can trigger one manually.</p>
+                        </div>
+                    </td>
+                </tr>
+                {% endif %}
+
+                {% for task in tasks %}
+                <tr class="hover:bg-slate-800/50 transition">
+                    <td class="py-4 px-4 whitespace-nowrap">
+                        <div class="font-mono text-xs text-slate-300 font-semibold">{{ task.id }}</div>
+                        <div class="flex items-center space-x-1.5 mt-1">
+                            <span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400">
+                                {{ task.platform.value }}
+                            </span>
+                            <span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400">
+                                {{ task.task_type.value }}
+                            </span>
+                        </div>
+                    </td>
+                    <td class="py-4 px-4">
+                        <a href="/tasks/{{ task.id }}" class="font-medium text-white hover:text-emerald-400 transition block max-w-md truncate">
+                            {{ task.title }}
+                        </a>
+                        <div class="text-xs text-slate-400 mt-0.5 flex items-center space-x-2">
+                            <span class="font-mono">{{ task.repo_name }}</span>
+                            <span>•</span>
+                            <span class="font-mono text-slate-500">branch: {{ task.base_branch }}</span>
+                        </div>
+                    </td>
+                    <td class="py-4 px-4 whitespace-nowrap">
+                        {% if task.status.value == "PENDING_APPROVAL" %}
+                            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                ⏳ Pending Approval
+                            </span>
+                        {% elif task.status.value in ["PLANNING", "CODING", "TESTING"] %}
+                            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 animate-pulse">
+                                ⚙️ {{ task.status.value }}
+                            </span>
+                        {% elif task.status.value == "AWAITING_CONFIRMATION" %}
+                            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                                🔍 Awaiting Confirm
+                            </span>
+                        {% elif task.status.value == "COMPLETED" %}
+                            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                ✅ Completed
+                            </span>
+                        {% elif task.status.value == "FAILED" %}
+                            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                ❌ Failed
+                            </span>
+                        {% elif task.status.value == "CANCELLED" %}
+                            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                🛑 Cancelled
+                            </span>
+                        {% else %}
+                            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-500/10 text-slate-400 border border-slate-500/20">
+                                {{ task.status.value }}
+                            </span>
+                        {% endif %}
+                    </td>
+                    <td class="py-4 px-4 whitespace-nowrap text-xs text-slate-400">
+                        {{ task.created_at.strftime('%Y-%m-%d %H:%M') }}
+                    </td>
+                    <td class="py-4 px-4 whitespace-nowrap text-right space-x-2">
+                        {% if task.status.value == "PENDING_APPROVAL" %}
+                            <button onclick="approveTask('{{ task.id }}')" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1.5 rounded font-medium transition">
+                                Approve
+                            </button>
+                        {% elif task.status.value in ["APPROVED", "PLANNING", "CODING", "TESTING", "PUSHING", "REVISION_REQUESTED"] %}
+                            <button onclick="stopTask('{{ task.id }}')" class="bg-rose-700 hover:bg-rose-600 text-white text-xs px-3 py-1.5 rounded font-medium transition">
+                                Stop
+                            </button>
+                        {% elif task.status.value == "AWAITING_CONFIRMATION" %}
+                            <button onclick="confirmTask('{{ task.id }}')" class="bg-purple-600 hover:bg-purple-500 text-white text-xs px-3 py-1.5 rounded font-medium transition">
+                                Confirm & Push
+                            </button>
+                        {% elif task.status.value == "CANCELLED" or task.status.value == "FAILED" %}
+                            <button onclick="approveTask('{{ task.id }}')" class="bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white text-xs px-2.5 py-1.5 rounded font-medium transition">
+                                Retry
+                            </button>
+                        {% endif %}
+                        <a href="/folders#folder-{{ task.id }}" class="bg-indigo-600/80 hover:bg-indigo-600 text-white text-xs px-2.5 py-1.5 rounded font-medium transition inline-flex items-center space-x-1" title="View Project Folder (.issueforge/tasks/{{ task.id }})">
+                            <i data-lucide="folder" class="w-3.5 h-3.5"></i>
+                            <span>Folder</span>
+                        </a>
+                        <a href="/tasks/{{ task.id }}" class="bg-slate-700 hover:bg-slate-600 text-white text-xs px-3 py-1.5 rounded font-medium transition inline-block">
+                            Details
+                        </a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Trigger Task Modal -->
+<div id="taskModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+    <div class="bg-cardbg border border-bordercolor rounded-xl w-full max-w-lg p-6 shadow-2xl">
+        <div class="flex items-center justify-between pb-4 border-b border-bordercolor mb-4">
+            <h3 class="text-lg font-bold text-white">Trigger New Coding Task</h3>
+            <button onclick="closeModal()" class="text-slate-400 hover:text-white transition">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+        <form id="createTaskForm" onsubmit="submitTask(event)" class="space-y-4">
+            <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Git Repository URL</label>
+                <input type="text" id="repoUrl" required placeholder="https://gitlab.com/group/repo.git" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
+            </div>
+            <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Task / Issue Title</label>
+                <input type="text" id="taskTitle" required placeholder="e.g. Implement authentication feature" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
+            </div>
+            <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Base Branch</label>
+                <input type="text" id="baseBranch" value="main" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
+            </div>
+            <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Description & Requirements</label>
+                <textarea id="taskDesc" rows="4" required placeholder="Describe what the multi-LLM team should build or fix..." class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"></textarea>
+            </div>
+            <div class="flex justify-end space-x-3 pt-2">
+                <button type="button" onclick="closeModal()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm font-medium text-slate-300">
+                    Cancel
+                </button>
+                <button type="submit" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium text-white">
+                    Submit Task
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

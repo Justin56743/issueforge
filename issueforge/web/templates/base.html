@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Issueforge | Autonomous Git Agent{% endblock %}</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        jetson: '#76B900', // NVIDIA Jetson green
+                        darkbg: '#0f172a',
+                        cardbg: '#1e293b',
+                        bordercolor: '#334155',
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="/static/css/custom.css">
+    {% block head %}{% endblock %}
+</head>
+<body class="bg-darkbg text-slate-100 min-h-screen flex flex-col font-sans antialiased">
+    <!-- Navbar -->
+    <header class="bg-cardbg border-b border-bordercolor sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-9 h-9 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-bold text-lg">
+                    ⚡
+                </div>
+                <div>
+                    <a href="/" class="text-xl font-bold tracking-tight text-white flex items-center space-x-2">
+                        <span>Issueforge</span>
+                        <span class="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/30">Jetson Orin</span>
+                    </a>
+                </div>
+            </div>
+
+            <nav class="flex items-center space-x-6 text-sm font-medium">
+                <a href="/" class="text-slate-300 hover:text-white transition flex items-center space-x-1">
+                    <i data-lucide="layout-dashboard" class="w-4 h-4"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="/folders" class="text-slate-200 hover:text-white transition flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/30 hover:bg-indigo-500/20">
+                    <i data-lucide="folder-git-2" class="w-4 h-4 text-indigo-400"></i>
+                    <span>Task Folders</span>
+                    <span class="text-[9px] bg-indigo-500/30 text-indigo-300 px-1.5 py-0.2 rounded font-mono font-bold">DOSSIER</span>
+                </a>
+                <a href="/sandboxes" class="text-slate-300 hover:text-white transition flex items-center space-x-1">
+                    <i data-lucide="box" class="w-4 h-4"></i>
+                    <span>Sandboxes</span>
+                </a>
+                <a href="/settings" class="text-slate-300 hover:text-white transition flex items-center space-x-1">
+                    <i data-lucide="settings" class="w-4 h-4"></i>
+                    <span>Settings & Webhooks</span>
+                </a>
+                <div class="flex items-center space-x-2 pl-4 border-l border-bordercolor">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span class="text-xs text-slate-400">Native Engine Online</span>
+                </div>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-bordercolor py-6 text-center text-xs text-slate-500">
+        <p>Issueforge • Autonomous Multi-LLM Git Agent • Native Jetson Nano Orin Orchestrator</p>
+    </footer>
+
+    <script src="/static/vendor/marked.min.js"></script>
+    <script src="/static/vendor/mermaid.min.js"></script>
+    <script>
+        if (window.mermaid) {
+            mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+        }
+    </script>
+    <script src="/static/js/dashboard.js"></script>
+    <script>
+        lucide.createIcons();
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

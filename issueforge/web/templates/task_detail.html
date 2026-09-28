@@ -1,0 +1,880 @@
+{% extends "base.html" %}
+
+{% block title %}{{ task.title }} | Issueforge Task Detail{% endblock %}
+
+{% block head %}
+<!-- Local Vendored xterm.js ANSI Web Terminal CSS & JS in Head -->
+<link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+<script src="/static/vendor/xterm/xterm.js"></script>
+<script src="/static/vendor/xterm/xterm-addon-fit.js"></script>
+<script src="/static/vendor/xterm/xterm-addon-web-links.js"></script>
+{% endblock %}
+
+{% block content %}
+<!-- Back to Dashboard -->
+<div class="mb-4">
+    <a href="/" class="text-xs text-slate-400 hover:text-white transition flex items-center space-x-1">
+        <i data-lucide="arrow-left" class="w-4 h-4"></i>
+        <span>Back to Dashboard</span>
+    </a>
+</div>
+
+<!-- Task Header Banner -->
+<div class="bg-cardbg border border-bordercolor rounded-xl p-6 mb-6 shadow-sm">
+    <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+        <div>
+            <div class="flex items-center space-x-2 mb-2">
+                <span class="font-mono text-xs text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">{{ task.id }}</span>
+                <span class="text-xs uppercase font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">{{ task.platform.value }}</span>
+                <span class="text-xs uppercase font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">{{ task.task_type.value }}</span>
+                {% if task.priority %}
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono">{{ task.priority }}</span>
+                {% endif %}
+            </div>
+            <h1 class="text-2xl font-bold text-white">{{ task.title }}</h1>
+            <div class="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-1 font-mono">
+                <span>Repo: {{ task.repo_name }}</span>
+                <span>•</span>
+                <span>Branch: <span class="text-emerald-400">{{ task.working_branch }}</span></span>
+                <span>•</span>
+                <span>Target: 
+                    <span id="headerTargetBranch" class="text-cyan-400 font-bold cursor-pointer hover:underline" title="Click to change target branch" onclick="promptChangeTargetBranch('{{ task.id }}')">{{ task.selected_target_branch or task.base_branch }}</span>
+                    <button onclick="promptChangeTargetBranch('{{ task.id }}')" title="Change Target Branch" class="ml-1 text-slate-400 hover:text-cyan-300 transition">
+                        <i data-lucide="edit-2" class="w-3 h-3 inline"></i>
+                    </button>
+                </span>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex flex-wrap items-center gap-3">
+            {% if task.status.value == "PENDING_APPROVAL" %}
+                <!-- Target Branch Selector for Pending Approval -->
+                <div class="flex items-center space-x-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs">
+                    <span class="text-slate-400 font-mono">Target:</span>
+                    <select id="targetBranchSelectPending" onchange="updateTargetBranch('{{ task.id }}', this.value)" class="bg-transparent text-cyan-300 font-semibold font-mono focus:outline-none cursor-pointer">
+                        {% set current_target = task.selected_target_branch or task.base_branch or 'main' %}
+                        {% set candidate_list = task.target_branch_candidates if task.target_branch_candidates else [task.base_branch or 'main'] %}
+                        {% if current_target not in candidate_list %}
+                            <option value="{{ current_target }}" class="bg-slate-900 text-white" selected>{{ current_target }}</option>
+                        {% endif %}
+                        {% for b in candidate_list %}
+                            <option value="{{ b }}" class="bg-slate-900 text-white" {% if current_target == b %}selected{% endif %}>{{ b }}</option>
+                        {% endfor %}
+                        <option value="__custom__" class="bg-slate-900 text-amber-300">+ Custom Branch...</option>
+                    </select>
+                </div>
+                <button onclick="approveTask('{{ task.id }}')" class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center space-x-2">
+                    <i data-lucide="play" class="w-4 h-4"></i>
+                    <span>Approve & Launch Codespace</span>
+                </button>
+                <button onclick="rejectTask('{{ task.id }}')" class="bg-rose-700 hover:bg-rose-600 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center space-x-2">
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                    <span>Reject</span>
+                </button>
+            {% elif task.status.value == "AWAITING_INPUT" %}
+                <span class="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 px-3 py-1.5 rounded-lg font-medium animate-pulse flex items-center space-x-1.5">
+                    <i data-lucide="help-circle" class="w-4 h-4"></i>
+                    <span>Awaiting Your Clarification Below</span>
+                </span>
+                <button onclick="stopTask('{{ task.id }}')" class="bg-rose-700 hover:bg-rose-600 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center space-x-2">
+                    <i data-lucide="square" class="w-4 h-4"></i>
+                    <span>Cancel Task</span>
+                </button>
+            {% elif task.status.value in ["APPROVED", "PLANNING", "CODING", "TESTING", "PUSHING", "REVISION_REQUESTED"] %}
+                <button onclick="stopTask('{{ task.id }}')" class="bg-rose-700 hover:bg-rose-600 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center space-x-2 animate-pulse shadow-md shadow-rose-900/40">
+                    <i data-lucide="square" class="w-4 h-4 fill-white"></i>
+                    <span>Stop / Cancel Task</span>
+                </button>
+            {% elif task.status.value in ["AWAITING_CONFIRMATION", "AWAITING_BRANCH_SELECTION"] %}
+                {% if task.status.value == "AWAITING_BRANCH_SELECTION" %}
+                    <span class="text-xs bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-3 py-1.5 rounded-lg font-medium flex items-center space-x-1.5">
+                        <i data-lucide="git-branch" class="w-4 h-4"></i>
+                        <span>Paused — choose a target branch to start</span>
+                    </span>
+                {% endif %}
+                <!-- Target Branch Selector Dropdown -->
+                <div class="flex items-center space-x-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs">
+                    <span class="text-slate-400 font-mono">Target:</span>
+                    <select id="targetBranchSelect" onchange="updateTargetBranch('{{ task.id }}', this.value)" class="bg-transparent text-cyan-300 font-semibold font-mono focus:outline-none cursor-pointer">
+                        {% set current_target = task.selected_target_branch or task.base_branch or 'main' %}
+                        {% set candidate_list = task.target_branch_candidates if task.target_branch_candidates else [task.base_branch or 'main'] %}
+                        {% if current_target not in candidate_list %}
+                            <option value="{{ current_target }}" class="bg-slate-900 text-white" selected>{{ current_target }}</option>
+                        {% endif %}
+                        {% for b in candidate_list %}
+                            <option value="{{ b }}" class="bg-slate-900 text-white" {% if current_target == b %}selected{% endif %}>{{ b }}</option>
+                        {% endfor %}
+                        <option value="__custom__" class="bg-slate-900 text-amber-300">+ Custom Branch...</option>
+                    </select>
+                </div>
+
+                {% if task.status.value == "AWAITING_BRANCH_SELECTION" %}
+                    <!-- Nothing has been built yet: picking a branch is what starts the run. -->
+                    <button onclick="updateTargetBranch('{{ task.id }}', document.getElementById('targetBranchSelect').value)" class="bg-cyan-600 hover:bg-cyan-500 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center space-x-2 animate-pulse">
+                        <i data-lucide="git-branch" class="w-4 h-4"></i>
+                        <span>Confirm Branch & Start</span>
+                    </button>
+                {% else %}
+                    <button onclick="confirmTaskWithBranch('{{ task.id }}')" class="bg-purple-600 hover:bg-purple-500 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center space-x-2">
+                        <i data-lucide="git-pull-request" class="w-4 h-4"></i>
+                        <span>Confirm & Push PR</span>
+                    </button>
+                    <button onclick="openRevisionModal()" class="bg-amber-600 hover:bg-amber-500 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center space-x-2">
+                        <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                        <span>Request Revision</span>
+                    </button>
+                {% endif %}
+                <button onclick="stopTask('{{ task.id }}')" class="bg-slate-700 hover:bg-rose-700 text-slate-300 hover:text-white text-sm px-3 py-2 rounded-lg font-medium transition flex items-center space-x-1 border border-slate-600 hover:border-rose-600">
+                    <i data-lucide="x-circle" class="w-4 h-4"></i>
+                    <span>Cancel</span>
+                </button>
+            {% elif task.status.value == "COMPLETED" and task.pr_url %}
+                <a href="{{ task.pr_url }}" target="_blank" class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center space-x-2">
+                    <i data-lucide="external-link" class="w-4 h-4"></i>
+                    <span>View Pull Request</span>
+                </a>
+            {% elif task.status.value in ["CANCELLED", "FAILED"] %}
+                <button onclick="retryTask('{{ task.id }}')" class="bg-amber-600 hover:bg-amber-500 text-white text-sm px-4 py-2 rounded-lg font-semibold transition flex items-center space-x-2 shadow-md shadow-amber-950/40">
+                    <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+                    <span>🔄 Retry Pipeline (Run #{{ task.runs|length + 1 }})</span>
+                </button>
+            {% endif %}
+            
+            <!-- Task Dossier & Folder Actions -->
+            <a href="/folders#folder-{{ task.id }}" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3.5 py-2 rounded-lg font-medium transition flex items-center space-x-1.5 shadow-sm shadow-indigo-950/40" title="Open task folder in .issueforge/tasks/{{ task.id }}">
+                <i data-lucide="folder-git-2" class="w-4 h-4"></i>
+                <span>Task Folder</span>
+            </a>
+            <button onclick="openDossierModal('{{ task.id }}')" class="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs px-3 py-2 rounded-lg font-medium transition flex items-center space-x-1.5 border border-slate-700" title="Quick view dossier README & metadata">
+                <i data-lucide="book-open" class="w-3.5 h-3.5 text-indigo-400"></i>
+                <span>Dossier</span>
+            </button>
+            <a href="obsidian://open?path={{ canvas_abs_path | urlencode }}" class="bg-purple-700 hover:bg-purple-600 text-white text-xs px-3 py-2 rounded-lg font-medium transition flex items-center space-x-1.5 border border-purple-600/50" title="Open in Obsidian. Requires Obsidian on this machine with {{ settings.forge_vault_root }} added as a vault.">
+                <i data-lucide="git-branch-plus" class="w-3.5 h-3.5"></i>
+                <span>Canvas in Obsidian</span>
+            </a>
+            <button onclick="copyCanvasPath()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs px-3 py-2 rounded-lg font-medium transition flex items-center space-x-1.5 border border-slate-700" title="Copy the canvas file path ({{ canvas_abs_path }})">
+                <i data-lucide="clipboard" class="w-3.5 h-3.5 text-purple-400"></i>
+                <span>Copy Canvas Path</span>
+            </button>
+            <a href="/api/tasks/{{ task.id }}/canvas" target="_blank" class="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs px-3 py-2 rounded-lg font-medium transition flex items-center space-x-1.5 border border-slate-700" title="View the raw task_dag.canvas JSON">
+                <i data-lucide="braces" class="w-3.5 h-3.5 text-purple-400"></i>
+                <span>Canvas JSON</span>
+            </a>
+            
+            <div class="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs font-semibold">
+                Status: <span id="taskStatusBadge" class="{% if task.status.value in ['CANCELLED', 'FAILED'] %}text-rose-400{% elif task.status.value in ['PLANNING', 'CODING', 'TESTING'] %}text-cyan-400 animate-pulse{% elif task.status.value in ['AWAITING_CONFIRMATION', 'AWAITING_INPUT', 'AWAITING_BRANCH_SELECTION'] %}text-purple-400 font-bold{% else %}text-emerald-400{% endif %}">{{ task.status.value }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Interactive Question Card (Supervisory Orchestrator Q&A) -->
+{% if questions %}
+    {% for q in questions %}
+    <div class="bg-cardbg border {% if q.status.value == 'PENDING' %}border-amber-500/50 bg-amber-500/5{% else %}border-slate-700{% endif %} rounded-xl p-5 mb-6 shadow-sm">
+        <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center space-x-2 text-amber-400 text-xs font-bold uppercase tracking-wider">
+                <i data-lucide="help-circle" class="w-4 h-4"></i>
+                <span>Supervisory Orchestrator Question</span>
+            </div>
+            {% if q.status.value == 'PENDING' %}
+                <span class="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full font-mono font-bold animate-pulse">Awaiting Input</span>
+            {% else %}
+                <span class="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono">Answered</span>
+            {% endif %}
+        </div>
+        
+        <h3 class="text-sm font-semibold text-white mb-1">{{ q.question }}</h3>
+        {% if q.context %}
+            <p class="text-xs text-slate-400 mb-3 italic">{{ q.context }}</p>
+        {% endif %}
+
+        {% if q.status.value == 'PENDING' %}
+            <div class="space-y-3 pt-2">
+                {% if q.options %}
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {% for opt in q.options %}
+                    <button onclick="submitQuestionAnswer('{{ task.id }}', '{{ q.id }}', '{{ opt }}', '{{ opt }}')" class="text-left bg-slate-800 hover:bg-amber-600/30 hover:border-amber-500/50 border border-slate-700 text-slate-200 hover:text-white px-3 py-2 rounded-lg text-xs transition flex items-center space-x-2">
+                        <i data-lucide="check" class="w-3.5 h-3.5 text-amber-400 shrink-0"></i>
+                        <span>{{ opt }}</span>
+                    </button>
+                    {% endfor %}
+                </div>
+                {% endif %}
+                <form onsubmit="submitCustomQuestionAnswer(event, '{{ task.id }}', '{{ q.id }}')" class="flex gap-2 pt-1">
+                    <input type="text" id="customAnswer_{{ q.id }}" placeholder="Or type custom instructions / answer..." class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500">
+                    <button type="submit" class="bg-amber-600 hover:bg-amber-500 text-white text-xs px-4 py-1.5 rounded-lg font-medium transition">
+                        Submit Answer
+                    </button>
+                </form>
+            </div>
+        {% else %}
+            <div class="bg-slate-900 border border-slate-800 p-2.5 rounded-lg text-xs text-emerald-300 font-mono mt-2">
+                ✓ Recorded Answer: {{ q.answer or q.selected_option }}
+            </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+{% endif %}
+
+{% if task.error_message %}
+<div class="bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 mb-6 flex items-start space-x-3 text-rose-300 text-xs shadow-sm">
+    <i data-lucide="alert-circle" class="w-5 h-5 text-rose-400 shrink-0 mt-0.5"></i>
+    <div>
+        <span class="font-bold uppercase tracking-wider block text-rose-400 mb-0.5">Execution Halted / Error:</span>
+        <p class="font-mono leading-relaxed">{{ task.error_message }}</p>
+    </div>
+</div>
+{% endif %}
+
+<!-- Main 2-Column Grid -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Left Column: Live Terminal Log Stream (2 cols) -->
+    <div class="lg:col-span-2 space-y-6">
+        <!-- Multi-Run Pipeline Navigator Bar -->
+        <div class="bg-cardbg border border-bordercolor rounded-xl p-4 shadow-sm space-y-3">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div class="flex items-center space-x-2">
+                    <i data-lucide="history" class="w-4 h-4 text-purple-400"></i>
+                    <span class="text-xs font-bold uppercase tracking-wider text-white">Pipeline Execution Runs</span>
+                    <span id="runCountBadge" class="text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full font-mono font-bold">
+                        {{ task.runs|length if task.runs else 1 }} Run{% if task.runs and task.runs|length > 1 %}s{% endif %}
+                    </span>
+                </div>
+                <div class="text-[11px] text-slate-400 flex items-center space-x-2">
+                    <span>Active Run Workspace:</span>
+                    <span id="activeRunPill" class="font-mono font-bold text-cyan-300 bg-slate-800 px-2.5 py-0.5 rounded border border-slate-700">{{ active_run }}</span>
+                </div>
+            </div>
+
+            <!-- Run Selector Pills -->
+            <div id="runsBarContainer" class="flex flex-wrap gap-2 pt-1">
+                {% if task.runs and task.runs|length > 0 %}
+                    {% for r in task.runs %}
+                    <button id="runPill_{{ r.run_id }}" onclick="selectActiveRunView('{{ task.id }}', '{{ r.run_id }}')"
+                        class="flex items-center space-x-2 px-3 py-2 rounded-lg text-xs font-mono transition border {% if r.run_id == active_run %}bg-purple-600/20 border-purple-500 text-white shadow-md shadow-purple-950/40{% else %}bg-slate-900/90 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700{% endif %}">
+                        <span class="font-bold">#{{ r.attempt_number }} {{ r.run_id }}</span>
+                        <span class="text-[10px] px-1.5 py-0.2 rounded font-semibold {% if r.status.value == 'COMPLETED' %}bg-emerald-500/20 text-emerald-300{% elif r.status.value == 'FAILED' %}bg-rose-500/20 text-rose-300{% else %}bg-cyan-500/20 text-cyan-300 animate-pulse{% endif %}">
+                            {{ r.status.value }}
+                        </span>
+                        <span class="text-[10px] text-slate-400">
+                            {% if r.duration_seconds %}{{ r.duration_seconds|round(1) }}s{% else %}Active{% endif %}
+                        </span>
+                        {% if r.failure_stage %}
+                        <span class="text-[10px] text-rose-400 font-sans truncate max-w-[140px]" title="{{ r.error_message }}">
+                            ({{ r.failure_stage }})
+                        </span>
+                        {% endif %}
+                    </button>
+                    {% endfor %}
+                {% else %}
+                    <div class="px-3 py-1.5 rounded-lg text-xs font-mono bg-slate-900 border border-slate-800 text-slate-400 flex items-center space-x-2">
+                        <span class="font-bold text-white">#1 {{ active_run }}</span>
+                        <span class="text-[10px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.2 rounded font-semibold animate-pulse">
+                            {{ task.status.value }}
+                        </span>
+                    </div>
+                {% endif %}
+            </div>
+            {% if task.runs and task.runs|length > 1 %}
+            <p class="text-[11px] text-slate-400 italic flex items-center space-x-1.5">
+                <i data-lucide="info" class="w-3.5 h-3.5 text-purple-400 shrink-0"></i>
+                <span>Click any run above to inspect its sandbox terminal logs, bash commands, and failure diagnosis.</span>
+            </p>
+            {% endif %}
+        </div>
+
+        <!-- Jetson Sandbox Execution Stream & Codespace Launcher -->
+        <div class="bg-cardbg border border-bordercolor rounded-xl overflow-hidden shadow-sm">
+            <div class="bg-slate-800/80 px-4 py-2.5 border-b border-bordercolor flex items-center justify-between flex-wrap gap-2">
+                <div class="flex items-center space-x-2">
+                    <span class="w-3 h-3 rounded-full bg-rose-500 inline-block"></span>
+                    <span class="w-3 h-3 rounded-full bg-amber-500 inline-block"></span>
+                    <span class="w-3 h-3 rounded-full bg-emerald-500 inline-block"></span>
+                    <span class="text-xs font-mono font-semibold text-slate-300 ml-2">Jetson Sandbox Execution Stream</span>
+                    <span class="text-[11px] text-slate-400 bg-slate-900 border border-slate-700/60 px-2 py-0.5 rounded-full flex items-center space-x-1">
+                        <i data-lucide="bot" class="w-3 h-3 text-purple-400"></i>
+                        <span>4-Agent Pipeline</span>
+                    </span>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <div class="flex items-center bg-slate-900 rounded p-0.5 border border-slate-700/60 text-xs">
+                        <button id="tabStreamTerminal" onclick="switchStreamTab('terminal')" class="px-2.5 py-0.5 rounded text-[11px] font-medium bg-purple-600 text-white transition flex items-center space-x-1.5 shadow-sm">
+                            <i data-lucide="terminal" class="w-3.5 h-3.5"></i>
+                            <span>AGY CLI Terminal</span>
+                        </button>
+                        <button id="tabStreamEvents" onclick="switchStreamTab('events')" class="px-2 py-0.5 rounded text-[11px] font-medium text-slate-400 hover:text-slate-200 transition">Agent Stream</button>
+                        <button id="tabStreamRaw" onclick="switchStreamTab('raw')" class="px-2 py-0.5 rounded text-[11px] font-medium text-slate-400 hover:text-slate-200 transition">Raw sandbox.log</button>
+                    </div>
+                    <div class="flex items-center space-x-1.5 border-l border-slate-700 pl-3">
+                        <span id="termStatusDot" class="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                        <span id="termStatusText" class="text-[11px] font-mono text-emerald-400">Live AGY PTY</span>
+                    </div>
+                    <a href="/tasks/{{ task.id }}/codespace?run={{ active_run }}" target="_blank" class="px-3 py-1 rounded text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition flex items-center space-x-1.5 shadow-sm ml-2 border border-emerald-500/30">
+                        <i data-lucide="code-2" class="w-3.5 h-3.5"></i>
+                        <span>Open Agent Codespace ↗</span>
+                    </a>
+                </div>
+            </div>
+            <!-- Tab 1: Interactive xterm.js AGY CLI Terminal (Default) -->
+            <div id="terminalXtermContainer" class="p-3 bg-[#0d1117] h-96 overflow-hidden border-t border-slate-900 relative">
+                <div id="xtermMount" class="w-full h-full"></div>
+            </div>
+            <!-- Tab 2: Agent Event Stream -->
+            <div id="terminalLogs" class="hidden p-4 bg-slate-950 font-mono text-xs text-slate-300 h-96 overflow-y-auto space-y-1.5 selection:bg-emerald-500/30">
+                {% if events and events|length > 0 %}
+                    {% for event in events %}
+                    <div class="leading-relaxed">
+                        <span class="text-slate-600">[{{ event.created_at.strftime('%H:%M:%S') }}]</span>
+                        {% if event.role %}
+                            <span class="text-cyan-400 font-bold">[{{ event.role.value }}]</span>
+                        {% endif %}
+                        <span class="{% if event.event_type.value == 'ERROR' %}text-rose-400 font-semibold{% elif event.event_type.value == 'STEP' %}text-amber-300 font-semibold{% elif event.event_type.value == 'TEST_RUN' %}text-purple-300 font-semibold{% elif event.event_type.value == 'QUESTION' %}text-amber-300 font-bold{% elif event.event_type.value == 'LEARNING' %}text-emerald-300 font-bold{% else %}text-slate-300{% endif %}">
+                            {{ event.message }}
+                        </span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div id="emptyEventsNotice" class="text-slate-500 italic">No events streamed yet. Pipeline activity will be logged and permanently stored here in real-time.</div>
+                {% endif %}
+            </div>
+            <!-- Tab 3: Raw sandbox.log Stream -->
+            <div id="sandboxRawLogs" class="hidden p-4 bg-slate-950 font-mono text-xs text-slate-300 h-96 overflow-y-auto selection:bg-emerald-500/30">
+                {% if sandbox_log and sandbox_log.strip() %}
+                    <pre class="whitespace-pre-wrap leading-relaxed">{{ sandbox_log }}</pre>
+                {% else %}
+                    <div class="text-slate-500 italic">No raw sandbox command executions recorded yet for this workspace.</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Live Execution DAG (Obsidian Canvas, rendered natively) -->
+        <div class="bg-cardbg border border-bordercolor rounded-xl overflow-hidden shadow-sm">
+            <div class="bg-slate-800/80 px-4 py-3 border-b border-bordercolor flex items-center justify-between flex-wrap gap-2">
+                <div class="flex items-center space-x-2">
+                    <i data-lucide="git-branch-plus" class="w-4 h-4 text-purple-400"></i>
+                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-200">Live Execution DAG</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <div class="hidden md:flex items-center space-x-2 mr-2 text-[10px] font-mono">
+                        <span class="flex items-center space-x-1"><span class="w-2 h-2 rounded-full" style="background:#eab308"></span><span class="text-slate-400">Running</span></span>
+                        <span class="flex items-center space-x-1"><span class="w-2 h-2 rounded-full" style="background:#10b981"></span><span class="text-slate-400">Passed</span></span>
+                        <span class="flex items-center space-x-1"><span class="w-2 h-2 rounded-full" style="background:#06b6d4"></span><span class="text-slate-400">Awaiting</span></span>
+                        <span class="flex items-center space-x-1"><span class="w-2 h-2 rounded-full" style="background:#f43f5e"></span><span class="text-slate-400">Failed</span></span>
+                    </div>
+                    <button onclick="zoomTaskCanvas(-0.15)" title="Zoom out" class="text-xs bg-slate-900 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded border border-slate-700 transition">
+                        <i data-lucide="zoom-out" class="w-3.5 h-3.5"></i>
+                    </button>
+                    <button onclick="resetTaskCanvasZoom()" title="Fit to width" class="text-xs bg-slate-900 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded border border-slate-700 transition">
+                        <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>
+                    </button>
+                    <button onclick="zoomTaskCanvas(0.15)" title="Zoom in" class="text-xs bg-slate-900 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded border border-slate-700 transition">
+                        <i data-lucide="zoom-in" class="w-3.5 h-3.5"></i>
+                    </button>
+                    <button onclick="renderTaskCanvas(taskId)" title="Refresh" class="text-xs bg-slate-900 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded border border-slate-700 transition">
+                        <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="p-4 bg-slate-950/40">
+                <div id="taskCanvasEmpty" class="text-slate-500 italic text-xs hidden">Loading execution canvas...</div>
+                <div id="taskCanvasViewport" class="relative overflow-auto"></div>
+            </div>
+            <div class="px-4 py-3 border-t border-bordercolor bg-slate-900/40">
+                <div class="flex items-center gap-2">
+                    <i data-lucide="user-cog" class="w-4 h-4 text-amber-400 flex-shrink-0"></i>
+                    <input id="canvasDirectiveInput" type="text" placeholder="Steer the agent, e.g. 'only touch the auth endpoints'"
+                           onkeydown="if(event.key==='Enter') submitCanvasDirective(taskId)"
+                           class="flex-grow bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-500/60 font-mono">
+                    <button onclick="submitCanvasDirective(taskId)" class="bg-amber-600 hover:bg-amber-500 text-white text-xs px-3 py-1.5 rounded-lg font-medium transition flex items-center space-x-1.5 flex-shrink-0">
+                        <i data-lucide="send" class="w-3.5 h-3.5"></i>
+                        <span>Queue Directive</span>
+                    </button>
+                </div>
+                <p class="text-[10px] text-slate-500 mt-1.5 font-mono">
+                    Queued, not injected — <code>agy</code> runs one-shot, so a directive applies at the next planner/coder/tester turn, not to the agent currently running.
+                </p>
+            </div>
+        </div>
+
+        <!-- Architecture Blueprint & Technical Specification -->
+        <div class="bg-cardbg border border-bordercolor rounded-xl overflow-hidden shadow-sm">
+            <div class="bg-slate-800/80 px-4 py-3 border-b border-bordercolor flex items-center justify-between flex-wrap gap-2">
+                <div class="flex items-center space-x-2">
+                    <i data-lucide="compass" class="w-4 h-4 text-cyan-400"></i>
+                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-200">Architecture Blueprint & Implementation Plan</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <div class="flex items-center bg-slate-900 rounded p-0.5 border border-slate-700/60 text-xs mr-1">
+                        <button id="blueprintViewRenderedBtn" onclick="toggleBlueprintView('rendered')" class="px-2 py-0.5 rounded text-[11px] font-medium bg-cyan-600 text-white transition">Rendered</button>
+                        <button id="blueprintViewRawBtn" onclick="toggleBlueprintView('raw')" class="px-2 py-0.5 rounded text-[11px] font-medium text-slate-400 hover:text-slate-200 transition">Markdown</button>
+                    </div>
+                    <!-- Mermaid Diagram Controls (Auto-shown when diagrams exist) -->
+                    <div id="mermaidControls" class="hidden items-center bg-slate-900 rounded p-0.5 border border-slate-700/60 text-xs mr-1 space-x-0.5">
+                        <button onclick="zoomMermaid(1.15)" title="Zoom In Diagram" class="px-1.5 py-0.5 text-slate-400 hover:text-cyan-400 font-mono font-bold transition">+</button>
+                        <button onclick="zoomMermaid(0.85)" title="Zoom Out Diagram" class="px-1.5 py-0.5 text-slate-400 hover:text-cyan-400 font-mono font-bold transition">-</button>
+                        <button onclick="resetMermaidZoom()" title="Reset Zoom" class="px-1.5 py-0.5 text-slate-400 hover:text-cyan-400 transition">↺</button>
+                        <button onclick="exportMermaidSVG()" title="Export Diagram as SVG" class="px-1.5 py-0.5 text-slate-400 hover:text-emerald-400 transition font-medium">SVG ⬇</button>
+                    </div>
+                    <button onclick="copyToClipboard(document.getElementById('rawPlanData').textContent, 'copyPlanBtn')" id="copyPlanBtn" class="text-xs bg-slate-900 hover:bg-slate-700 text-slate-300 px-2.5 py-1 rounded border border-slate-700 transition flex items-center space-x-1 shadow-sm">
+                        <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                        <span>Copy Plan</span>
+                    </button>
+                </div>
+            </div>
+            <div class="p-5 bg-slate-950/80 overflow-x-auto">
+                <div id="planContentRendered" class="prose prose-invert max-w-none text-xs leading-relaxed text-slate-300">
+                    <div class="text-slate-500 italic">Rendering architecture blueprint...</div>
+                </div>
+                <pre id="planContentRaw" class="hidden whitespace-pre-wrap font-mono text-xs text-slate-300 leading-relaxed"></pre>
+            </div>
+        </div>
+
+
+        <!-- Git Diff Viewer -->
+        {% if task.diff_content %}
+        <div class="bg-cardbg border border-bordercolor rounded-xl overflow-hidden shadow-sm">
+            <div class="bg-slate-800/80 px-4 py-3 border-b border-bordercolor flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                    <i data-lucide="git-commit" class="w-4 h-4 text-emerald-400"></i>
+                    <span class="text-xs font-semibold uppercase text-slate-300">Git Diff & Code Modifications</span>
+                </div>
+                <span class="text-xs font-mono text-emerald-400">{{ task.diff_stat or '' }}</span>
+            </div>
+            <div class="p-4 bg-slate-950 overflow-x-auto">
+                <pre class="font-mono text-xs text-slate-300 leading-normal">{{ task.diff_content }}</pre>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Right Column: Context, Plan, Test & Review Summary (1 col) -->
+    <div class="space-y-6">
+        <!-- Reviewer Summary Card -->
+        {% if task.review_summary %}
+        <div class="bg-cardbg border border-purple-500/30 rounded-xl p-5 shadow-sm">
+            <div class="flex items-center space-x-2 text-purple-400 text-xs font-bold uppercase tracking-wider mb-3">
+                <i data-lucide="shield-check" class="w-4 h-4"></i>
+                <span>Reviewer & Security Evaluation</span>
+            </div>
+            <div class="space-y-3 text-sm">
+                <div>
+                    <span class="text-xs text-slate-400 block font-medium">Risk Level:</span>
+                    <span class="font-semibold text-emerald-400">{{ task.review_summary.risk_assessment }}</span>
+                </div>
+                <div>
+                    <span class="text-xs text-slate-400 block font-medium">Summary:</span>
+                    <p class="text-slate-300 text-xs mt-0.5">{{ task.review_summary.summary }}</p>
+                </div>
+                <div>
+                    <span class="text-xs text-slate-400 block font-medium">Suggested Commit Message:</span>
+                    <pre class="bg-slate-900 border border-slate-800 p-2 rounded text-[11px] font-mono text-slate-300 mt-1 whitespace-pre-wrap">{{ task.review_summary.suggested_commit_message }}</pre>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Harness Memory / Learned Skills -->
+        {% if learnings %}
+        <div class="bg-cardbg border border-emerald-500/30 rounded-xl p-5 shadow-sm">
+            <div class="flex items-center space-x-2 text-emerald-400 text-xs font-bold uppercase tracking-wider mb-3">
+                <i data-lucide="brain" class="w-4 h-4"></i>
+                <span>Harness Learned Skills</span>
+            </div>
+            <div class="space-y-3">
+                {% for l in learnings %}
+                <div class="border-b border-slate-800 pb-2 last:border-0 last:pb-0">
+                    <span class="text-xs font-semibold text-white block">{{ l.topic }}</span>
+                    <p class="text-[11px] text-slate-400 mt-0.5">{{ l.summary }}</p>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Test Suite Summary -->
+        <div class="bg-cardbg border border-bordercolor rounded-xl p-5 shadow-sm">
+            <div class="flex items-center space-x-2 text-cyan-400 text-xs font-bold uppercase tracking-wider mb-3">
+                <i data-lucide="flask-conical" class="w-4 h-4"></i>
+                <span>Test Suite Verification</span>
+            </div>
+            <p class="text-xs text-slate-300 font-mono">{{ task.test_summary or "Test suite has not run yet." }}</p>
+        </div>
+
+        <!-- Formalized Git Discussion Context -->
+        <div class="bg-cardbg border border-blue-500/30 rounded-xl p-5 shadow-sm space-y-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-2 text-blue-400 text-xs font-bold uppercase tracking-wider">
+                    <i data-lucide="message-square" class="w-4 h-4"></i>
+                    <span>Git Remote Discussion</span>
+                </div>
+                <span id="discussionCountBadge" class="text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded-full font-mono font-bold">
+                    0
+                </span>
+            </div>
+
+            <!-- Discussion Thread Feed -->
+            <div id="discussionThreadContainer" class="space-y-3 max-h-72 overflow-y-auto pr-1">
+                <div class="text-xs text-slate-500 italic p-3 text-center">Loading discussion...</div>
+            </div>
+
+            <!-- Inline Reply Form -->
+            <form onsubmit="postDiscussionComment(event, '{{ task.id }}')" class="pt-2 border-t border-slate-800 space-y-2">
+                <div class="flex items-center space-x-2">
+                    <input type="text" id="newCommentInput" placeholder="Reply to Git issue or note..." class="flex-1 bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500 transition">
+                    <button type="submit" id="sendCommentBtn" class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium px-3.5 py-2 rounded-lg transition shrink-0 flex items-center space-x-1 shadow-sm">
+                        <i data-lucide="send" class="w-3.5 h-3.5"></i>
+                        <span>Reply</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Task Dossier: Team & Subtasks -->
+        <div class="bg-cardbg border border-indigo-500/30 rounded-xl p-5 shadow-sm space-y-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-2 text-indigo-400 text-xs font-bold uppercase tracking-wider">
+                    <i data-lucide="users" class="w-4 h-4"></i>
+                    <span>Task Dossier & Team</span>
+                </div>
+                <span class="text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded-full font-mono">
+                    {{ task.created_at.strftime('%b %d, %H:%M') if task.created_at else 'Recent' }}
+                </span>
+            </div>
+            
+            <div class="space-y-3 text-xs text-slate-300">
+                <!-- Author Info -->
+                <div class="flex items-center justify-between py-1.5 border-b border-slate-800">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-6 h-6 rounded-full bg-indigo-600 flex items-center justify-center text-[10px] font-bold text-white shadow">
+                            {{ (task.collaborators.author if task.collaborators and task.collaborators.author else (task.sender or "OP"))[:2]|upper }}
+                        </div>
+                        <span class="text-slate-400">Author:</span>
+                        <span class="font-semibold text-slate-200">
+                            @{{ task.collaborators.author if task.collaborators and task.collaborators.author else (task.sender or "operator") }}
+                        </span>
+                    </div>
+                    <span class="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded font-mono">{{ task.platform.value }}</span>
+                </div>
+                
+                {% if task.collaborators and task.collaborators.participants %}
+                <div class="py-1 border-b border-slate-800">
+                    <span class="text-slate-400 block mb-1.5 font-medium">Participants ({{ task.collaborators.participants|length }}):</span>
+                    <div class="flex flex-wrap gap-1.5">
+                        {% for p in task.collaborators.participants %}
+                        <span class="bg-slate-900 border border-slate-700/80 text-cyan-300 text-[10px] px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
+                            <span class="w-1.5 h-1.5 rounded-full bg-cyan-400 inline-block"></span>
+                            <span>{{ p }}</span>
+                        </span>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- Subtasks Checklist with Progress Bar -->
+                {% if task.subtasks %}
+                <div class="pt-1 space-y-2">
+                    <div class="flex items-center justify-between text-xs">
+                        <span class="text-slate-300 font-semibold flex items-center space-x-1.5">
+                            <i data-lucide="check-circle-2" class="w-3.5 h-3.5 text-indigo-400"></i>
+                            <span>Checklist & Subtasks</span>
+                        </span>
+                        {% set completed_count = task.subtasks|selectattr('completed')|list|length %}
+                        {% set total_count = task.subtasks|length %}
+                        {% set pct = (completed_count / total_count * 100)|round|int if total_count > 0 else 0 %}
+                        <span id="subtaskCountLabel" class="text-[11px] text-indigo-300 font-mono font-bold">
+                            {{ completed_count }}/{{ total_count }} ({{ pct }}%)
+                        </span>
+                    </div>
+                    <!-- Progress Bar -->
+                    <div class="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-800">
+                        <div id="subtaskProgressBar" class="bg-gradient-to-r from-indigo-500 to-emerald-400 h-1.5 rounded-full transition-all duration-300" style="width: {{ pct }}%"></div>
+                    </div>
+                    <div class="space-y-1.5 max-h-48 overflow-y-auto pr-1 pt-1">
+                        {% for st in task.subtasks %}
+                        <div id="subtaskItem_{{ st.id }}" onclick="toggleTaskSubtask('{{ task.id }}', '{{ st.id }}')" class="cursor-pointer group flex items-start space-x-2 text-[11px] p-1.5 rounded-lg hover:bg-slate-800/60 transition {% if st.completed %}text-slate-500 line-through{% else %}text-slate-200{% endif %}">
+                            <i id="subtaskIcon_{{ st.id }}" data-lucide="{% if st.completed %}check-square{% else %}square{% endif %}" class="w-3.5 h-3.5 {% if st.completed %}text-emerald-400{% else %}text-slate-500 group-hover:text-indigo-400{% endif %} shrink-0 mt-0.5 transition"></i>
+                            <span class="leading-tight">{{ st.title }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Task Folder Access Links -->
+            <div class="pt-3 border-t border-slate-800 flex items-center space-x-2">
+                <a href="/folders#folder-{{ task.id }}" class="flex-1 text-center bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 hover:text-white py-1.5 rounded-lg text-xs font-medium border border-indigo-500/30 transition flex items-center justify-center space-x-1">
+                    <i data-lucide="folder" class="w-3.5 h-3.5"></i>
+                    <span>Open Task Folder</span>
+                </a>
+                <button onclick="openDossierModal('{{ task.id }}')" class="bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 px-3 rounded-lg text-xs font-medium border border-slate-700 transition flex items-center space-x-1">
+                    <i data-lucide="book-open" class="w-3.5 h-3.5 text-indigo-400"></i>
+                    <span>README</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Pipeline Runs & Multi-Sandbox History -->
+        {% if task.runs %}
+        <div class="bg-cardbg border border-purple-500/30 rounded-xl p-5 shadow-sm">
+            <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center space-x-2 text-purple-400 text-xs font-bold uppercase tracking-wider">
+                    <i data-lucide="history" class="w-4 h-4"></i>
+                    <span>Pipeline Runs ({{ task.runs|length }})</span>
+                </div>
+                <span class="text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full font-mono">
+                    Active: {{ active_run }}
+                </span>
+            </div>
+
+            <div class="space-y-2.5">
+                {% for r in task.runs %}
+                <div id="runCard_{{ r.run_id }}" onclick="selectActiveRunView('{{ task.id }}', '{{ r.run_id }}')" class="cursor-pointer bg-slate-900/80 border {% if r.run_id == active_run %}border-purple-500/50 bg-purple-500/5 shadow-md shadow-purple-950/30{% else %}border-slate-800 hover:border-slate-700{% endif %} p-3 rounded-lg text-xs space-y-1.5 transition">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-2">
+                            <span class="font-mono font-bold text-white">#{{ r.attempt_number }} {{ r.run_id }}</span>
+                            <span class="text-[10px] px-1.5 py-0.2 rounded font-mono font-semibold {% if r.status.value == 'COMPLETED' %}bg-emerald-500/20 text-emerald-300{% elif r.status.value == 'FAILED' %}bg-rose-500/20 text-rose-300{% else %}bg-cyan-500/20 text-cyan-300{% endif %}">
+                                {{ r.status.value }}
+                            </span>
+                        </div>
+                        <span class="text-[10px] text-slate-400 font-mono">
+                            {% if r.duration_seconds %}{{ r.duration_seconds|round(1) }}s{% else %}Running{% endif %}
+                        </span>
+                    </div>
+
+                    {% if r.error_message %}
+                    <p class="text-[11px] text-rose-400/90 font-mono truncate" title="{{ r.error_message }}">
+                        ⚠️ {{ r.failure_stage or 'Error' }}: {{ r.error_message }}
+                    </p>
+                    {% elif r.test_summary %}
+                    <p class="text-[11px] text-slate-400 font-mono truncate" title="{{ r.test_summary }}">
+                        {{ r.test_summary }}
+                    </p>
+                    {% endif %}
+
+                    <div class="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[10px]">
+                        <span class="text-slate-500 font-mono">{{ r.sandbox_dir or 'sandboxes/' ~ r.run_id }}</span>
+                        <button onclick="viewRunLog('{{ task.id }}', '{{ r.run_id }}')" class="text-cyan-400 hover:text-cyan-300 font-medium hover:underline flex items-center space-x-1">
+                            <i data-lucide="file-text" class="w-3 h-3"></i>
+                            <span>View Run Log</span>
+                        </button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Sandbox Workspace & Stream History -->
+        <div class="bg-cardbg border border-bordercolor rounded-xl p-5 shadow-sm">
+            <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center space-x-2 text-emerald-400 text-xs font-bold uppercase tracking-wider">
+                    <i data-lucide="box" class="w-4 h-4"></i>
+                    <span>Sandbox Workspace (<span id="activeRunLabel">{{ active_run }}</span>)</span>
+                </div>
+                <div class="flex items-center space-x-1.5 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+                    <span id="sandboxLiveIndicator" class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                    <span class="text-[10px] text-emerald-400 font-mono font-semibold">LIVE</span>
+                </div>
+            </div>
+
+            <div class="space-y-2 text-xs text-slate-300">
+                <div class="flex justify-between py-1 border-b border-slate-800">
+                    <span class="text-slate-500">Path</span>
+                    <span id="sandboxPath" class="font-mono text-[11px] text-slate-300 truncate max-w-[180px]" title="{{ sandbox_stats.workspace_path if sandbox_stats else '' }}">{{ sandbox_stats.workspace_path if sandbox_stats else '.issueforge/tasks/' ~ task.id ~ '/sandboxes/' ~ active_run }}</span>
+                </div>
+                <div class="flex justify-between py-1 border-b border-slate-800">
+                    <span class="text-slate-500">Disk Size</span>
+                    <span id="sandboxDiskSize" class="font-mono font-semibold text-slate-200">{{ sandbox_stats.size_formatted if sandbox_stats else '0 B' }}</span>
+                </div>
+                <div class="flex justify-between py-1 border-b border-slate-800">
+                    <span class="text-slate-500">Files</span>
+                    <span id="sandboxFileCount" class="font-mono text-slate-200">{{ sandbox_stats.file_count if sandbox_stats else 0 }} files</span>
+                </div>
+                <div class="flex justify-between py-1 border-b border-slate-800">
+                    <span class="text-slate-500">Commands Run</span>
+                    <span id="sandboxCommandCount" class="font-mono text-emerald-400 font-semibold">{{ sandbox_stats.command_count if sandbox_stats else 0 }}</span>
+                </div>
+
+                <div class="pt-3 flex items-center space-x-2">
+                    <a id="sandboxLogBtn" href="/api/tasks/{{ task.id }}/runs/{{ active_run }}/log" target="_blank" class="flex-1 text-center bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white py-2 rounded-lg text-xs font-medium border border-slate-700 transition">
+                        View Log Stream
+                    </a>
+                    <button onclick="deleteSandbox('{{ task.id }}')" class="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 px-3 py-2 rounded-lg text-xs font-medium transition flex items-center space-x-1">
+                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        <span>Delete Sandbox</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- Architectural Plan -->
+        <div class="bg-cardbg border border-bordercolor rounded-xl p-5 shadow-sm">
+            <div class="flex items-center space-x-2 text-amber-400 text-xs font-bold uppercase tracking-wider mb-3">
+                <i data-lucide="compass" class="w-4 h-4"></i>
+                <span>Architectural Plan</span>
+            </div>
+            <div class="text-xs text-slate-300 whitespace-pre-wrap font-sans leading-relaxed max-h-72 overflow-y-auto">
+                {{ task.plan or "Plan generation in progress..." }}
+            </div>
+        </div>
+
+        <!-- Task Description Context -->
+        <div class="bg-cardbg border border-bordercolor rounded-xl p-5 shadow-sm">
+            <div class="flex items-center space-x-2 text-slate-400 text-xs font-bold uppercase tracking-wider mb-3">
+                <i data-lucide="file-text" class="w-4 h-4"></i>
+                <span>Original Description</span>
+            </div>
+            <div class="text-xs text-slate-300 whitespace-pre-wrap max-h-60 overflow-y-auto">
+                {{ task.description }}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Revision Modal -->
+<div id="revisionModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+    <div class="bg-cardbg border border-bordercolor rounded-xl w-full max-w-md p-6 shadow-2xl">
+        <div class="flex items-center justify-between pb-4 border-b border-bordercolor mb-4">
+            <h3 class="text-lg font-bold text-white">Request Task Revision</h3>
+            <button onclick="closeRevisionModal()" class="text-slate-400 hover:text-white transition">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+        <form onsubmit="submitRevision(event, '{{ task.id }}')" class="space-y-4">
+            <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Revision Instructions</label>
+                <textarea id="revisionNotes" rows="4" required placeholder="Specify what logic or tests need to be modified..." class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"></textarea>
+            </div>
+            <div class="flex justify-end space-x-3 pt-2">
+                <button type="button" onclick="closeRevisionModal()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm font-medium text-slate-300">
+                    Cancel
+                </button>
+                <button type="submit" class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-sm font-medium text-white">
+                    Submit Revision
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Task Dossier Modal -->
+<div id="dossierModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+    <div class="bg-cardbg border border-bordercolor rounded-xl w-full max-w-4xl max-h-[85vh] flex flex-col p-6 shadow-2xl">
+        <div class="flex items-center justify-between pb-3 border-b border-bordercolor mb-3">
+            <div class="flex items-center space-x-2 text-indigo-400 font-bold">
+                <i data-lucide="folder-git-2" class="w-5 h-5"></i>
+                <h3 class="text-base font-bold text-white">Project Dossier: {{ task.id }}</h3>
+                <span class="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono">.issueforge/tasks/{{ task.id }}/</span>
+            </div>
+            <button onclick="closeDossierModal()" class="text-slate-400 hover:text-white transition">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+
+        <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center space-x-2 bg-slate-900 rounded p-1 border border-slate-800">
+                <button id="dossierTabReadme" onclick="switchDossierTab('readme')" class="px-3 py-1 rounded text-xs font-semibold bg-indigo-600 text-white transition">README.md Dossier</button>
+                <button id="dossierTabJson" onclick="switchDossierTab('json')" class="px-3 py-1 rounded text-xs font-semibold text-slate-400 hover:text-white transition">task_summary.json</button>
+            </div>
+            <a href="/folders#folder-{{ task.id }}" class="text-xs text-indigo-400 hover:underline flex items-center space-x-1">
+                <span>Open in Task Folders Page</span>
+                <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+            </a>
+        </div>
+
+        <div id="dossierReadmeContainer" class="flex-grow overflow-y-auto bg-slate-950 p-4 rounded-lg border border-slate-800 font-mono text-xs text-slate-200 whitespace-pre-wrap leading-relaxed">
+            <div id="dossierReadmeContent">Loading README dossier...</div>
+        </div>
+
+        <div id="dossierJsonContainer" class="hidden flex-grow overflow-y-auto bg-slate-950 p-4 rounded-lg border border-slate-800 font-mono text-xs text-amber-300 whitespace-pre-wrap leading-relaxed">
+            <pre id="dossierJsonContent">Loading task summary JSON...</pre>
+        </div>
+
+        <div class="flex justify-between items-center pt-3 border-t border-bordercolor mt-3">
+            <span class="text-[11px] text-slate-500 font-mono">Storage location: .issueforge/tasks/{{ task.id }}/</span>
+            <button onclick="closeDossierModal()" class="px-4 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-medium text-white">
+                Close
+            </button>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function copyCanvasPath() {
+    const path = {{ canvas_abs_path | tojson }};
+    navigator.clipboard.writeText(path)
+        .then(() => alert('Canvas path copied:\n' + path))
+        .catch(() => window.prompt('Canvas path:', path));
+}
+</script>
+<!-- Raw Data Holders for Formalized Rendering -->
+<script type="text/plain" id="rawPlanData">{{ task.plan or '' }}</script>
+<script type="text/plain" id="rawCommentsData">{{ task.comments_context or '' }}</script>
+
+<script>
+    const taskId = "{{ task.id }}";
+    const initialRunId = "{{ active_run }}";
+    window.currentActiveRunId = initialRunId;
+
+    // Initialize interactive xterm.js ANSI Terminal attached to live AGY CLI PTY
+    initXtermTerminal(taskId, initialRunId);
+
+    // Render the live execution DAG straight from task_dag.canvas (no Obsidian needed)
+    window.taskIdForCanvas = taskId;
+    renderTaskCanvas(taskId);
+    window.addEventListener('resize', () => renderTaskCanvas(taskId));
+
+    // Render formalized architecture plan & Mermaid diagrams
+    renderPlanSpecification();
+
+    // Render formalized Git discussion thread
+    renderDiscussionComments();
+
+    // Connect real-time Server-Sent Events
+    setupTaskSSE(taskId);
+
+    // Initial fetch of sandbox stats
+    refreshSandboxStats(taskId, initialRunId);
+
+    // Real-time live polling for sandbox stats (every 2.5s)
+    setInterval(() => {
+        refreshSandboxStats(taskId, window.currentActiveRunId);
+        pollRawLogIfActive(taskId);
+    }, 2500);
+
+    // Canvas stage colours change on pipeline transitions; poll a little slower than
+    // the log panels since it is a whole-file fetch.
+    setInterval(() => renderTaskCanvas(taskId), 5000);
+
+    // Live sync for pipeline runs status (every 3s)
+    setInterval(async () => {
+        try {
+            const res = await fetch(`/api/tasks/${taskId}/runs`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.runs && data.runs.length > 0) {
+                    const badge = document.getElementById('runCountBadge');
+                    if (badge) badge.textContent = `${data.runs.length} Run${data.runs.length > 1 ? 's' : ''}`;
+                    data.runs.forEach(r => {
+                        const pill = document.getElementById(`runPill_${r.run_id}`);
+                        if (pill) {
+                            const statusSpan = pill.querySelector('span:nth-child(2)');
+                            if (statusSpan && statusSpan.textContent.trim() !== r.status) {
+                                statusSpan.textContent = r.status;
+                            }
+                        }
+                    });
+                }
+            }
+        } catch (e) {}
+    }, 3000);
+</script>
+{% endblock %}

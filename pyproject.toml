@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "issueforge"
+version = "0.1.0"
+description = "Autonomous multi-LLM Git engineering agent with a human approval gate"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Issueforge Team" }]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "aiogram>=3.10.0",
+    "litellm>=1.40.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "aiosqlite>=0.20.0",
+    "httpx>=0.27.0",
+    "jinja2>=3.1.4",
+    "networkx>=3.0",
+    "pyyaml>=6.0",
+    "watchfiles>=0.21.0",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.0.1",
+    "rich>=13.7.1",
+    "typer>=0.12.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2.0", "pytest-asyncio>=0.23.7"]
+
+[project.scripts]
+issueforge = "issueforge.main:cli"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+include = ["issueforge*"]
+
+[tool.setuptools.package-data]
+issueforge = [
+    "web/templates/*.html",
+    "web/static/**/*",
+    "agents/skills/**/*",
+]
+

@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block title %}Sandbox Workspaces | Issueforge{% endblock %}
+
+{% block content %}
+<div class="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <div>
+        <div class="flex items-center space-x-3">
+            <h1 class="text-2xl font-bold text-white tracking-tight">Native Sandbox Workspaces</h1>
+            <span class="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full flex items-center space-x-1.5 font-mono">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                <span>LIVE UPDATING</span>
+            </span>
+        </div>
+        <p class="text-sm text-slate-400 mt-1">
+            Zero-overhead Linux execution workspaces organized in <code class="bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded text-xs">.issueforge/tasks/{task_id}/sandboxes/</code>
+        </p>
+    </div>
+    <div class="flex items-center space-x-3">
+        <a href="/folders" class="bg-indigo-600/80 hover:bg-indigo-600 text-white px-3.5 py-2 rounded-lg text-xs font-medium transition flex items-center space-x-1.5">
+            <i data-lucide="folder-git-2" class="w-3.5 h-3.5"></i>
+            <span>Task Dossiers & Folders</span>
+        </a>
+        <a href="/" class="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-3.5 py-2 rounded-lg text-xs font-medium transition border border-slate-700 flex items-center space-x-1.5">
+            <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
+            <span>Dashboard</span>
+        </a>
+    </div>
+</div>
+
+<!-- Sandboxes List Table -->
+<div class="bg-cardbg border border-bordercolor rounded-xl overflow-hidden shadow-sm">
+    <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm text-slate-300">
+            <thead class="bg-slate-800/80 border-b border-bordercolor text-xs uppercase tracking-wider text-slate-400">
+                <tr>
+                    <th class="py-3.5 px-4 font-semibold">Task ID & Workspace</th>
+                    <th class="py-3.5 px-4 font-semibold">Disk Usage</th>
+                    <th class="py-3.5 px-4 font-semibold">Files</th>
+                    <th class="py-3.5 px-4 font-semibold">Commands Run</th>
+                    <th class="py-3.5 px-4 font-semibold">Last Active</th>
+                    <th class="py-3.5 px-4 font-semibold text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="sandboxesTableBody" class="divide-y divide-bordercolor">
+                {% if not sandboxes %}
+                <tr>
+                    <td colspan="6" class="py-12 text-center text-slate-500">
+                        <div class="flex flex-col items-center">
+                            <i data-lucide="box" class="w-10 h-10 mb-2 stroke-1 text-slate-600"></i>
+                            <p class="text-base font-medium text-slate-400">No sandbox workspaces found</p>
+                            <p class="text-xs text-slate-500 mt-1">Workspaces are automatically deployed when tasks are approved and execute.</p>
+                        </div>
+                    </td>
+                </tr>
+                {% endif %}
+
+                {% for sb in sandboxes %}
+                <tr class="hover:bg-slate-800/50 transition">
+                    <td class="py-4 px-4">
+                        <div class="flex items-center space-x-2">
+                            <i data-lucide="folder-git-2" class="w-4 h-4 text-emerald-400"></i>
+                            <a href="/tasks/{{ sb.task_id }}" class="font-mono text-sm font-semibold text-white hover:text-emerald-400 transition">
+                                {{ sb.task_id }}
+                            </a>
+                            {% if sb.run_id %}
+                            <span class="text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/30 px-1.5 py-0.2 rounded font-mono font-bold">{{ sb.run_id }}</span>
+                            {% endif %}
+                        </div>
+                        <div class="text-xs text-slate-500 font-mono mt-0.5 truncate max-w-sm" title="{{ sb.workspace_path }}">
+                            {{ sb.workspace_path }}
+                        </div>
+                    </td>
+                    <td class="py-4 px-4 whitespace-nowrap">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-800 border border-slate-700 text-slate-300">
+                            {{ sb.size_formatted }}
+                        </span>
+                    </td>
+                    <td class="py-4 px-4 whitespace-nowrap text-xs text-slate-300">
+                        {{ sb.file_count }} files
+                    </td>
+                    <td class="py-4 px-4 whitespace-nowrap text-xs text-emerald-400 font-mono font-semibold">
+                        {{ sb.command_count }}
+                    </td>
+                    <td class="py-4 px-4 whitespace-nowrap text-xs text-slate-400">
+                        {{ sb.last_modified[:19].replace('T', ' ') if sb.last_modified else 'N/A' }}
+                    </td>
+                    <td class="py-4 px-4 whitespace-nowrap text-right space-x-2">
+                        <button onclick="viewSandboxLog('{{ sb.task_id }}')" class="bg-slate-700 hover:bg-slate-600 text-slate-200 hover:text-white text-xs px-3 py-1.5 rounded font-medium transition inline-flex items-center space-x-1">
+                            <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
+                            <span>Logs</span>
+                        </button>
+                        <a href="/tasks/{{ sb.task_id }}" class="bg-emerald-600/80 hover:bg-emerald-600 text-white text-xs px-3 py-1.5 rounded font-medium transition inline-flex items-center space-x-1">
+                            <i data-lucide="eye" class="w-3.5 h-3.5"></i>
+                            <span>Task</span>
+                        </a>
+                        <button onclick="deleteSandbox('{{ sb.task_id }}')" class="bg-rose-600/80 hover:bg-rose-600 text-white text-xs px-3 py-1.5 rounded font-medium transition inline-flex items-center space-x-1">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                            <span>Delete</span>
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Log Viewer Modal -->
+<div id="sandboxLogModal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+    <div class="bg-cardbg border border-bordercolor rounded-xl w-full max-w-4xl max-h-[85vh] flex flex-col p-6 shadow-2xl">
+        <div class="flex items-center justify-between pb-3 border-b border-bordercolor mb-3">
+            <div class="flex items-center space-x-2">
+                <i data-lucide="terminal" class="w-5 h-5 text-emerald-400"></i>
+                <h3 id="sandboxLogTitle" class="text-base font-bold text-white">Sandbox Execution Log</h3>
+            </div>
+            <button onclick="closeSandboxLogModal()" class="text-slate-400 hover:text-white transition">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+        <div class="flex-grow overflow-y-auto bg-slate-950 rounded-lg p-4 font-mono text-xs text-slate-200 border border-slate-800 leading-relaxed whitespace-pre-wrap" id="sandboxLogContent">
+            Loading execution logs...
+        </div>
+        <div class="flex justify-between items-center pt-3 border-t border-bordercolor mt-3">
+            <a id="downloadLogLink" href="#" target="_blank" class="text-xs text-emerald-400 hover:underline flex items-center space-x-1">
+                <i data-lucide="download" class="w-3.5 h-3.5"></i>
+                <span>Open Raw Log</span>
+            </a>
+            <button onclick="closeSandboxLogModal()" class="px-4 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-medium text-white">
+                Close
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Activate real-time live monitoring of all sandboxes
+    setupSandboxesLiveUpdates();
+</script>
+{% endblock %}
