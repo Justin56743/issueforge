@@ -46,7 +46,7 @@ of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`).
 >
 > Two more changes to carry over:
 > - An installed `agit` systemd unit must be replaced: it points at the old package and paths.
->   Start from [`systemd/issueforge.service`](systemd/issueforge.service) and fill in its placeholders.
+>   Start from [`systemd/issueforge.service`](https://github.com/Justin56743/issueforge/blob/main/systemd/issueforge.service) and fill in its placeholders.
 > - The dashboard now binds `127.0.0.1` by default. To keep serving it on your LAN, pass
 >   `--host 0.0.0.0` **and** set `FORGE_AUTH_TOKEN`; without the token it refuses to start.
 
@@ -55,6 +55,7 @@ of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`).
 From a checkout of this repository:
 
 ```bash
+git clone https://github.com/Justin56743/issueforge.git && cd issueforge
 pip install -e ".[dev]"
 pytest -q
 ```
@@ -121,17 +122,17 @@ Other commands: `issueforge status`, `issueforge trigger`, `issueforge migrate-v
 
 ## Architecture & Engineering Documentation
 
-The [`docs/`](docs/) directory holds the original design documents. They are **design history,
+The [`docs/`](https://github.com/Justin56743/issueforge/tree/main/docs) directory holds the original design documents. They are **design history,
 not a description of the running system**: they plan JWT/RBAC, Redis, `/api/v1` and container
 sandboxes, none of which was built. The security and isolation model is the one in
 [Safety](#safety) above.
 
 | Document | Focus & Description |
 | :--- | :--- |
-| **[High-Level Design (HLD)](docs/HLD.md)** | System topology, domain boundaries, component interactions, tech stack, data persistence, and security/isolation models. |
-| **[Low-Level Design (LLD)](docs/LLD.md)** | Class blueprints, database entity schemas, Data Transfer Objects (DTOs), REST/WebSocket API endpoints, and error handling policies. |
-| **[System Workflows (FLOW)](docs/FLOW.md)** | End-to-end task execution lifecycles, state machine transitions, and decision-tree logic. |
-| **[Sequence Diagrams](docs/SEQUENCE_DIAGRAM.md)** | Step-by-step Mermaid sequence diagrams for authentication, execution, real-time log streaming, data sync, and retries. |
+| **[High-Level Design (HLD)](https://github.com/Justin56743/issueforge/blob/main/docs/HLD.md)** | System topology, domain boundaries, component interactions, tech stack, data persistence, and security/isolation models. |
+| **[Low-Level Design (LLD)](https://github.com/Justin56743/issueforge/blob/main/docs/LLD.md)** | Class blueprints, database entity schemas, Data Transfer Objects (DTOs), REST/WebSocket API endpoints, and error handling policies. |
+| **[System Workflows (FLOW)](https://github.com/Justin56743/issueforge/blob/main/docs/FLOW.md)** | End-to-end task execution lifecycles, state machine transitions, and decision-tree logic. |
+| **[Sequence Diagrams](https://github.com/Justin56743/issueforge/blob/main/docs/SEQUENCE_DIAGRAM.md)** | Step-by-step Mermaid sequence diagrams for authentication, execution, real-time log streaming, data sync, and retries. |
 
 ### Multi-LLM collaborative roles
 
@@ -261,4 +262,4 @@ receipt.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [`LICENSE`](https://github.com/Justin56743/issueforge/blob/main/LICENSE).
