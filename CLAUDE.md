@@ -25,7 +25,8 @@ issueforge/                          # Python package root
 │   ├── merge_resolver.py      # MergeConflictResolver — 3-way conflict reconciliation
 │   ├── engine.py              # Execution engine orchestrating the full pipeline lifecycle
 │   ├── llm.py                 # LiteLLM wrapper with sequential model fallback router
-│   └── agy_runner.py          # AgySessionRunner — runs `agy` CLI inside sandbox with PTY
+│   ├── agy_runner.py          # AgySessionRunner — runs `agy` CLI inside sandbox with PTY
+│   └── skills/                # Agent SKILL.md folders — shipped in the wheel, copied into each sandbox
 │
 ├── core/                      # Core infrastructure
 │   ├── models.py              # Pydantic models: Task, TaskStatus, TaskEvent, TaskQuestion, PipelineRun, etc.
@@ -63,6 +64,7 @@ issueforge/                          # Python package root
 │
 └── web/                       # FastAPI web layer
     ├── api.py                 # REST API routes + Jinja2 template rendering + SSE + WebSocket
+    ├── auth.py                # Token gate: TokenAuthMiddleware, WebSocket token + Origin check, login token
     ├── static/                # CSS, JS, vendored libs (xterm.js, marked, mermaid)
     └── templates/             # Jinja2 HTML templates (dashboard, task detail, sandboxes, dossiers)
 
@@ -84,7 +86,9 @@ tests/                         # pytest + pytest-asyncio test suite
 ├── test_canvas_builder.py      # Canvas DAG, steering directives, telemetry
 ├── test_ast_blast_radius.py    # Import graph construction, downstream impact, risk bands
 ├── test_merge_resolver.py      # Conflict probe, reconciliation, abort-on-failure guarantees
-└── test_knowledge_and_caching.py # Lesson notes, graph links, plan reuse across retries
+├── test_knowledge_and_caching.py # Lesson notes, graph links, plan reuse across retries
+├── test_auth.py                # Loopback binding, token gate, WebSocket Origin, login token
+└── test_packaging.py           # Assets and skills inside the package, `init`, `--version`
 ```
 
 ---
@@ -149,7 +153,14 @@ Human confirms → PUSHING → git push + PR/MR creation → COMPLETED
 All config via environment variables / `.env` file, loaded through `pydantic-settings` in `issueforge/config.py`. A singleton `settings` is importable from `issueforge.config`.
 
 Key env vars:
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_IDS` — Telegram HITL
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_IDS`, `TELEGRAM_ENABLED` — Telegram HITL. An empty
+  allowlist means the bot ignores everyone (fails closed)
+- `FORGE_HOST` (default `127.0.0.1`) / `FORGE_PORT` — a non-loopback host refuses to start without
+  `FORGE_AUTH_TOKEN`
+- `FORGE_AUTH_TOKEN` — overrides the login token `issueforge start` otherwise creates at
+  `<vault>/auth_token` (mode 0600)
+- `GITHUB_WEBHOOK_SECRET` / `GITLAB_WEBHOOK_SECRET` — a webhook route skips the token only while its
+  secret is set; without one the hook URL needs `?token=`
 - `GITHUB_TOKEN` / `GITLAB_TOKEN` — platform PATs
 - `GEMINI_API_KEY` (+ optional `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`)
 - `PLANNER_MODEL`, `CODER_MODEL`, `TESTER_MODEL`, `REVIEWER_MODEL` — LiteLLM model identifiers
@@ -162,19 +173,31 @@ Key env vars:
 ## Development Commands
 
 ```bash
-# Install
+# Install for development (this machine's .venv is uv-managed and has no pip: use `uv pip`)
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"            # pytest lives only in the dev extra
 
-# Run the server (dashboard + webhooks + telegram bot)
-python -m issueforge.main start --port 8000
+# First run: write a minimal .env (never overwrites one), then start
+issueforge init
+issueforge start                   # binds 127.0.0.1:8000 and prints the ?token= login URL
+issueforge --version
 
-# Run tests
-pytest -v
-
-# Run specific test file
+# Run tests (CI runs the same on Python 3.10 and 3.12)
+pytest -q
 pytest tests/test_poller.py -v
 ```
+
+When testing or smoke-checking by hand, run `start`/`init` from a scratch directory with
+`FORGE_VAULT_ROOT` pointed at scratch: the repository's own `.env` holds live credentials, and the
+default vault holds the operator's real task history.
+
+## Releasing
+
+Published as `issueforge` on PyPI and at https://github.com/Justin56743/issueforge. The GitHub
+`main` is an **orphan history** (it began as one squashed commit), unrelated to the private GitLab
+history, so public work branches from `github/main`. The version lives only in
+`issueforge/__init__.py`. To release: bump it, `uv build`, `uvx twine check dist/*`, push and wait
+for CI, tag `vX.Y.Z`, then upload with `uv publish`. A PyPI version number can never be reused.
 
 ---
 
@@ -183,7 +206,7 @@ pytest tests/test_poller.py -v
 - **Async-first**: All I/O operations (DB, HTTP, LLM calls, subprocess) are async. Use `async/await` consistently.
 - **Pydantic everywhere**: All data structures are Pydantic `BaseModel` subclasses. Use `Field(default_factory=...)` for mutable defaults.
 - **Settings singleton**: Import `from issueforge.config import settings`. Never instantiate `Settings()` directly in modules.
-- **LLM calls via LiteLLM**: All LLM interactions go through `issueforge/agents/llm.py` which wraps `litellm.acompletion()` with automatic fallback routing.
+- **LLM calls: agy first, then LiteLLM**: try an `AgySessionRunner` session, then fall back to `call_llm_with_fallback` in `issueforge/agents/llm.py`, which wraps `litellm.acompletion()` with automatic model fallback. Never call a provider SDK directly.
 - **Task events**: Log significant actions as `TaskEvent` objects via the database. Use appropriate `EventType` and `AgentRole`.
 - **Sandbox isolation**: Each task run gets its own directory under `.issueforge/tasks/{task_id}/sandboxes/run-{n}/`. Never share sandboxes across tasks.
 - **Process groups**: Subprocesses use `start_new_session=True` and are killed via `os.killpg()` on cancellation.
@@ -275,6 +298,32 @@ pytest tests/test_poller.py -v
     into `.git/info/exclude` right after the clone. Git honours ignore rules only for *untracked*
     paths, so a repository that versions its own `PLAN.md` — issueforge itself does — still diffs and
     commits real edits to it. A name-based filter at commit time would break that case.
+
+19. **The dashboard is always token-gated.** `issueforge start` binds `127.0.0.1` by default,
+    and `assert_safe_binding` refuses a non-loopback host unless `FORGE_AUTH_TOKEN` was set by the
+    operator. It runs *before* the auto-generated login token is applied, so that token can never
+    license a public bind. `create_app()` itself is ungated when no token is set, which is what the
+    tests rely on. The token is accepted as `Authorization: Bearer`, `?token=`, or the
+    `forge_token` cookie that a `?token=` visit sets (SameSite=Strict). WebSockets accept only
+    `?token=` or the cookie, because browsers cannot set headers on them.
+
+20. **WebSockets need their own guard.** `BaseHTTPMiddleware` never sees WebSocket connections, so
+    `terminal_websocket` and `sandbox_shell_websocket` call `websocket_is_allowed` before
+    `accept()`. It checks the token and rejects a present `Origin` whose host:port differs from
+    `Host`: browsers apply no CORS to WebSockets, and without that check any page the operator
+    visits could open the bash shell. Any new WebSocket route must call it too.
+
+21. **Quote everything interpolated into a shell command.** `NativeSandbox.run_command` uses
+    `create_subprocess_shell`, so file paths, branch names, commit messages and URLs go through
+    `shlex.quote`. A commit message once expanded `$(...)`.
+
+22. **Agents never run in the server's working directory.** Each agent gets a sandbox, and the
+    operator-command agent runs in `<workspace_root>/operator`. `Path.cwd()` is the directory the
+    operator happened to start from, and agents run with `--dangerously-skip-permissions`.
+
+23. **The wheel must contain the application.** Templates, static assets and `agents/skills/` ship
+    through `[tool.setuptools.package-data]`. A new non-Python file outside those globs installs
+    cleanly and then 500s. `tests/test_packaging.py` checks the source tree, not the built wheel.
 
 ---
 
