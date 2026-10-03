@@ -139,8 +139,12 @@ async def test_diff_includes_new_files_and_commit_skips_agent_skills():
     copied into the sandbox for agy must never reach the commit."""
     sandbox = NativeSandbox("test-git-new-files")
     sandbox.setup()
-    await sandbox.run_command("git init -q && git commit -q --allow-empty -m init", emit_events=False)
-    await sandbox.run_command('git config user.name "Test" && git config user.email "t@t.com"', emit_events=False)
+    # Identity before the first commit: CI runners have no global git identity.
+    await sandbox.run_command(
+        'git init -q && git config user.name "Test" && git config user.email "t@t.com" '
+        "&& git commit -q --allow-empty -m init",
+        emit_events=False,
+    )
     git_mgr = GitRepoManager(sandbox, "https://github.com/test/repo.git", working_branch="forge/t")
     git_mgr._exclude_agent_artifacts()
 
