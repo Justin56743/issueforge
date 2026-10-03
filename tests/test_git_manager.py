@@ -4,28 +4,34 @@ from issueforge.core.sandbox import NativeSandbox
 from issueforge.git.repo_manager import GitRepoManager
 
 
-def test_auth_url_injection():
+def _credential_fill(env: dict, host: str, tmp_path) -> str:
+    """Ask git, with only `env` and an empty HOME, what it would send to `host`."""
+    import subprocess
+    run_env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), **env}
+    res = subprocess.run(
+        ["git", "credential", "fill"], input=f"protocol=https\nhost={host}\n\n",
+        capture_output=True, text=True, env=run_env,
+    )
+    return res.stdout
+
+
+def test_token_is_scoped_to_the_exact_host_and_never_in_the_url(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "github_token", "ghp_secret_token_123")
+    monkeypatch.setattr(settings, "gitlab_token", "glpat_secret_token_456")
     sandbox = NativeSandbox("test-git-001")
-    
-    # Without tokens
-    settings.github_token = None
-    settings.gitlab_token = None
-    mgr = GitRepoManager(sandbox, "https://github.com/org/repo.git")
-    assert mgr._get_authenticated_url() == "https://github.com/org/repo.git"
 
-    # With GitHub token
-    settings.github_token = "ghp_secret_token_123"
-    mgr = GitRepoManager(sandbox, "https://github.com/org/repo.git")
-    assert "x-access-token:ghp_secret_token_123@github.com" in mgr._get_authenticated_url()
+    gh = GitRepoManager(sandbox, "https://github.com/org/repo.git").credential_env()
+    assert "password=ghp_secret_token_123" in _credential_fill(gh, "github.com", tmp_path)
+    # A look-alike host gets nothing, even with the GitHub credentials in the env.
+    assert "ghp_secret" not in _credential_fill(gh, "github.com.evil.io", tmp_path)
 
-    # With GitLab token
-    settings.gitlab_token = "glpat_secret_token_456"
-    mgr_gl = GitRepoManager(sandbox, "https://gitlab.com/org/repo.git")
-    assert "oauth2:glpat_secret_token_456@gitlab.com" in mgr_gl._get_authenticated_url()
+    gl = GitRepoManager(sandbox, "https://gitlab.com/org/repo.git").credential_env()
+    assert "password=glpat_secret_token_456" in _credential_fill(gl, "gitlab.com", tmp_path)
 
-    # Cleanup settings
-    settings.github_token = None
-    settings.gitlab_token = None
+    # Substring matches used to inject the PATs into these URLs.
+    assert GitRepoManager(sandbox, "https://github.com.evil.io/a/b.git").credential_env() == {}
+    assert GitRepoManager(sandbox, "https://gitlab.attacker.net/a/b.git").credential_env() == {}
+    assert not hasattr(GitRepoManager, "_get_authenticated_url")
 
 
 @pytest.mark.asyncio
@@ -150,4 +156,44 @@ async def test_diff_includes_new_files_and_commit_skips_agent_skills():
     committed = await sandbox.run_command("git show --name-only --format= HEAD", emit_events=False)
     assert committed.stdout.split() == ["brand_new.py"]
 
+    sandbox.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_git_commands_never_carry_the_token(monkeypatch):
+    """Commands are logged to SSE, the events table and sandbox.log verbatim."""
+    from unittest.mock import AsyncMock
+    from issueforge.core.sandbox import CommandResult
+
+    monkeypatch.setattr(settings, "github_token", "ghp_secret_token_123")
+    sandbox = NativeSandbox("test-git-token-log")
+    calls = []
+
+    async def record(command, **kwargs):
+        calls.append((command, kwargs.get("env_vars") or {}))
+        return CommandResult(0, "", "")
+
+    monkeypatch.setattr(sandbox, "run_command", AsyncMock(side_effect=record))
+    mgr = GitRepoManager(sandbox, "https://github.com/org/repo.git", working_branch="forge/t")
+    await mgr.clone_repository()
+    await mgr.get_remote_branches()
+    await mgr.push_working_branch()
+
+    assert calls
+    assert all("ghp_secret" not in command for command, _ in calls)
+    network = [env for command, env in calls if command.startswith(("git clone", "git push")) or "git fetch" in command]
+    assert network and all(env.get("ISSUEFORGE_GIT_TOKEN") == "ghp_secret_token_123" for env in network)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_commands_do_not_inherit_server_secrets(monkeypatch):
+    monkeypatch.setenv("FORGE_AUTH_TOKEN", "dashboard-secret")
+    monkeypatch.setenv("GEMINI_API_KEY", "llm-secret")
+    sandbox = NativeSandbox("test-env-scrub")
+    sandbox.setup()
+    res = await sandbox.run_command("env", emit_events=False, env_vars={"EXTRA": "kept"})
+    assert "dashboard-secret" not in res.stdout
+    assert "llm-secret" not in res.stdout
+    assert "EXTRA=kept" in res.stdout
+    assert "PATH=" in res.stdout
     sandbox.cleanup()

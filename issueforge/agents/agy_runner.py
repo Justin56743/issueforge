@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from issueforge.config import settings
 from issueforge.core.events import event_bus
-from issueforge.core.sandbox import NativeSandbox
+from issueforge.core.sandbox import NativeSandbox, subprocess_env
 from issueforge.core.models import AgentRole, EventType
 
 
@@ -293,7 +293,9 @@ class AgySessionRunner:
             cmd.extend(["--effort", effort])
         cmd.append(f"--print={full_prompt}")
 
-        env = dict(os.environ)
+        # agy authenticates via its config under HOME, GOOGLE_* or GEMINI_API_KEY; it gets
+        # no other secret, because repo and issue text can prompt-inject it.
+        env = subprocess_env({k: v for k, v in os.environ.items() if k.startswith("GOOGLE_")})
         if settings.gemini_api_key:
             env["GEMINI_API_KEY"] = settings.gemini_api_key
 

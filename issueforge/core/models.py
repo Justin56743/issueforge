@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -6,6 +7,21 @@ from pydantic import BaseModel, Field
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# Task and run ids become directory names under the vault. Anything other than one plain
+# path segment ("..", "a/b", "") would let a request read, write or delete outside it.
+_SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+class UnsafeIdError(ValueError):
+    """An id that cannot be used as a single path segment."""
+
+
+def safe_path_id(value: str) -> str:
+    if not isinstance(value, str) or not _SAFE_ID.fullmatch(value):
+        raise UnsafeIdError(f"Invalid id: {value!r}")
+    return value
 
 
 class TaskStatus(str, Enum):

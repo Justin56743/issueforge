@@ -99,11 +99,21 @@ async def test_handle_user_text_reply_orchestrator():
     typing_msg.edit_text = AsyncMock()
     mock_msg.answer = AsyncMock(return_value=typing_msg)
 
-    with patch("issueforge.bot.handlers.task_queue.create_and_enqueue_task", AsyncMock()) as mock_create:
+    from issueforge.core.database import save_task
+    from issueforge.core.models import PlatformType, Task
+
+    await save_task(Task(
+        id="issue-1-recent", title="earlier", description="d", platform=PlatformType.GITHUB,
+        repo_url="https://github.com/acme/web.git", repo_name="acme/web", working_branch="forge/x",
+    ))
+
+    with patch("issueforge.bot.handlers.SupervisoryOrchestrator.interpret_operator_instruction",
+               new=AsyncMock(return_value={"intent": "CREATE_AND_RUN_TASK", "task_title": "Add dark mode"})), \
+         patch("issueforge.bot.handlers.task_queue.create_and_enqueue_task", AsyncMock()) as mock_create:
         mock_task = MagicMock()
         mock_task.id = "task-telegram-123"
         mock_task.title = "Add dark mode"
-        mock_task.repo_name = "anujdeulkar/issueforge"
+        mock_task.repo_name = "acme/web"
         mock_task.selected_target_branch = "main"
         mock_create.return_value = mock_task
 
@@ -111,10 +121,52 @@ async def test_handle_user_text_reply_orchestrator():
 
         assert mock_create.called
         assert mock_create.call_args.kwargs["auto_approve"] is True
+        # The repo comes from the most recent task, and a branch the operator never named
+        # is not pre-confirmed, so the run still stops at the branch gate.
+        assert mock_create.call_args.kwargs["repo_url"] == "https://github.com/acme/web.git"
+        assert mock_create.call_args.kwargs["selected_target_branch"] is None
         assert typing_msg.edit_text.called
         call_text = typing_msg.edit_text.call_args[0][0]
         assert "Supervisory Orchestrator: Task Initiated & Taking Over!" in call_text
         assert "task-telegram-123" in call_text
+
+
+async def test_takeover_with_no_known_repository_creates_nothing():
+    """It used to fall back to a hardcoded personal repository and auto-approve a run."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from issueforge.bot.handlers import handle_user_text_reply
+
+    mock_msg = MagicMock()
+    mock_msg.from_user.id = 1
+    mock_msg.text = "Add dark mode"
+    typing_msg = MagicMock()
+    typing_msg.edit_text = AsyncMock()
+    mock_msg.answer = AsyncMock(return_value=typing_msg)
+
+    with patch("issueforge.bot.handlers.SupervisoryOrchestrator.interpret_operator_instruction",
+               new=AsyncMock(return_value={"intent": "CREATE_AND_RUN_TASK"})), \
+         patch("issueforge.bot.handlers.task_queue.create_and_enqueue_task", AsyncMock()) as mock_create:
+        await handle_user_text_reply(mock_msg)
+
+    mock_create.assert_not_called()
+    assert "which repository" in typing_msg.edit_text.call_args[0][0]
+
+
+@pytest.mark.parametrize("text,intent", [
+    ("add a skill matrix page", "CREATE_AND_RUN_TASK"),
+    ("make the restart button blue", "CREATE_AND_RUN_TASK"),
+    ("cancel issue-4", "TASK_ACTION"),
+])
+async def test_fallback_intent_parser_matches_whole_words(text, intent):
+    """With the LLM unavailable, "skill" contained "kill" and cancelled the latest task."""
+    from unittest.mock import AsyncMock, patch
+    from issueforge.agents.orchestrator import SupervisoryOrchestrator
+
+    with patch("issueforge.agents.orchestrator.AgySessionRunner.run_prompt", new=AsyncMock(return_value=(False, ""))), \
+         patch("issueforge.agents.orchestrator.call_llm_with_fallback", new=AsyncMock(side_effect=RuntimeError("down"))):
+        decision = await SupervisoryOrchestrator.interpret_operator_instruction(text)
+
+    assert decision["intent"] == intent
 
 
 

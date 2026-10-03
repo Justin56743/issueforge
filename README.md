@@ -95,7 +95,7 @@ Other commands: `issueforge status`, `issueforge trigger`, `issueforge migrate-v
 ## Safety
 
 - **The dashboard executes shell commands.** It drives git and the `agy` CLI inside task
-  sandboxes and offers an interactive shell, so it is protected in two layers:
+  sandboxes, so it is protected in two layers:
   - **A token, always.** `issueforge start` uses `FORGE_AUTH_TOKEN` when it is set. Otherwise it
     generates one on first start, stores it in `~/.issueforge/auth_token` (mode 0600, under
     `FORGE_VAULT_ROOT`), and reuses it on every later start. Binding loopback alone is not enough:

@@ -79,7 +79,9 @@ class TelegramBotManager:
         try:
             bot_info = await self.bot.get_me()
             print(f"[Telegram Bot] Connected successfully as @{bot_info.username} (ID: {bot_info.id})")
-            self._polling_task = asyncio.create_task(self.dp.start_polling(self.bot))
+            # handle_signals=False: aiogram's own SIGINT/SIGTERM handlers replace uvicorn's
+            # and are never removed, so Ctrl+C and `systemctl stop` hung until SIGKILL.
+            self._polling_task = asyncio.create_task(self.dp.start_polling(self.bot, handle_signals=False))
         except Exception as e:
             err_str = str(e)
             if "zscaler" in err_str.lower() or "403" in err_str or "blocked" in err_str.lower():

@@ -148,23 +148,23 @@ def test_webhook_without_secret_configured_is_gated_by_the_token(monkeypatch):
     assert res.json()["detail"] == "Unauthorized."
 
 
-def test_sandbox_shell_websocket_without_token_is_refused(monkeypatch):
-    client = _client_with_token(monkeypatch, "secret-token")
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect("/ws/tasks/some-id/sandbox-shell"):
-            pass
-    assert exc.value.code == 1008
-
-
 def test_websocket_with_hostile_origin_is_refused_even_with_a_valid_token(monkeypatch):
     client = _client_with_token(monkeypatch, "secret-token")
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect(
-            "/ws/tasks/some-id/sandbox-shell?token=secret-token",
+            "/ws/tasks/some-id/terminal?token=secret-token",
             headers={"Origin": "https://evil.example"},
         ):
             pass
     assert exc.value.code == 1008
+
+
+def test_sandbox_shell_route_is_gone(monkeypatch):
+    """No UI reached it, yet it opened a login shell for anyone holding the token."""
+    client = _client_with_token(monkeypatch, "secret-token")
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ws/tasks/some-id/sandbox-shell?token=secret-token"):
+            pass
 
 
 def test_terminal_websocket_without_token_is_refused(monkeypatch):

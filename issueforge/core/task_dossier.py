@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from issueforge.config import settings
-from issueforge.core.models import Task, TaskStatus
+from issueforge.core.models import Task, TaskStatus, safe_path_id
 from issueforge.vault.canvas_builder import CANVAS_FILENAME
 
 logger = logging.getLogger("issueforge.core.task_dossier")
@@ -91,7 +91,7 @@ class TaskDossierManager:
     @staticmethod
     def get_task_dir(task_id: str) -> Path:
         settings.ensure_directories()
-        return (settings.forge_tasks_root / task_id).resolve()
+        return (settings.forge_tasks_root / safe_path_id(task_id)).resolve()
 
     @classmethod
     def ensure_task_directory(cls, task: Task) -> Path:
@@ -393,7 +393,7 @@ class TaskDossierManager:
     @classmethod
     def list_run_files(cls, task_id: str, run_id: str, max_files: int = 100) -> List[str]:
         """List files in the specific sandbox run workspace."""
-        run_dir = cls.get_task_dir(task_id) / "sandboxes" / run_id
+        run_dir = cls.get_task_dir(task_id) / "sandboxes" / safe_path_id(run_id)
         if not run_dir.exists():
             return []
         import os
@@ -415,7 +415,7 @@ class TaskDossierManager:
     @classmethod
     def get_run_file_tree(cls, task_id: str, run_id: str) -> List[Dict[str, Any]]:
         """Return structured tree with metadata and git status for all files in the sandbox."""
-        run_dir = (cls.get_task_dir(task_id) / "sandboxes" / run_id).resolve()
+        run_dir = (cls.get_task_dir(task_id) / "sandboxes" / safe_path_id(run_id)).resolve()
         if not run_dir.exists():
             return []
 
@@ -479,7 +479,7 @@ class TaskDossierManager:
     @classmethod
     def get_sandbox_file_content(cls, task_id: str, run_id: str, relative_path: str) -> Dict[str, Any]:
         """Safely fetch file content ensuring no directory traversal."""
-        run_dir = (cls.get_task_dir(task_id) / "sandboxes" / run_id).resolve()
+        run_dir = (cls.get_task_dir(task_id) / "sandboxes" / safe_path_id(run_id)).resolve()
         target = (run_dir / relative_path).resolve()
         if not target.is_relative_to(run_dir):
             raise PermissionError("Access outside sandbox directory is prohibited.")
@@ -500,7 +500,7 @@ class TaskDossierManager:
     @classmethod
     def save_sandbox_file_content(cls, task_id: str, run_id: str, relative_path: str, content: str) -> bool:
         """Safely write updated file content ensuring no directory traversal."""
-        run_dir = (cls.get_task_dir(task_id) / "sandboxes" / run_id).resolve()
+        run_dir = (cls.get_task_dir(task_id) / "sandboxes" / safe_path_id(run_id)).resolve()
         target = (run_dir / relative_path).resolve()
         if not target.is_relative_to(run_dir):
             raise PermissionError("Access outside sandbox directory is prohibited.")

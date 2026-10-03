@@ -146,6 +146,13 @@ def create_app() -> FastAPI:
     from issueforge.web.auth import TokenAuthMiddleware
     app.add_middleware(TokenAuthMiddleware)
 
+    from fastapi.responses import JSONResponse
+    from issueforge.core.models import UnsafeIdError
+
+    @app.exception_handler(UnsafeIdError)
+    async def unsafe_id_handler(request, exc: UnsafeIdError):
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
     # Include API and UI routes
     app.include_router(api_router)
 

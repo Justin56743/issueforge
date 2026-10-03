@@ -20,6 +20,7 @@ from issueforge.core.models import (
     TaskQuestion,
     TaskStatus,
     TaskSubtask,
+    safe_path_id,
     TaskType,
     utc_now,
 )
@@ -523,6 +524,8 @@ async def find_existing_task(
 async def delete_task(task_id: str) -> bool:
     """Delete a task, cascade its database records, and remove its folder and workspace."""
     import shutil
+    # Before any rmtree: "DELETE /api/tasks/%2E%2E" used to remove the whole vault.
+    safe_path_id(task_id)
     try:
         task_dir = (settings.forge_tasks_root / task_id).resolve()
         if task_dir.exists():

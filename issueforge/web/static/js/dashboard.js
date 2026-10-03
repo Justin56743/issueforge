@@ -354,6 +354,19 @@ function setupTaskSSE(taskId) {
 }
 
 
+// Markdown on these pages carries issue text, LLM output and test logs, and marked does not
+// sanitize. The page holds the dashboard cookie, so all rendered markdown goes through
+// DOMPurify; if it is missing this throws and callers fall back to escaped text.
+function renderMarkdown(text) {
+    return DOMPurify.sanitize(marked.parse(text || ''));
+}
+
+// For a value placed inside '...' in an inline handler: encodeURIComponent leaves the
+// apostrophe alone, which let a crafted file name close the string and run script.
+function jsArg(value) {
+    return encodeURIComponent(value).replace(/'/g, '%27');
+}
+
 function escapeHtml(str) {
     return str
         .replace(/&/g, "&amp;")
@@ -613,133 +626,21 @@ function initXtermTerminal(taskId, runId) {
     }
 }
 
-function initInteractiveShell(taskId, runId) {
-    const mount = document.getElementById('xtermShellMount');
-    if (!mount || typeof Terminal === 'undefined') return;
-
-    const effectiveRunId = runId || window.currentActiveRunId || 'run-1';
-
-    if (window.issueforgeShellSocket) {
-        try { window.issueforgeShellSocket.close(); } catch (e) {}
-        window.issueforgeShellSocket = null;
-    }
-
-    if (!window.issueforgeShellTerminal) {
-        const term = new Terminal({
-            cursorBlink: true,
-            fontSize: 12,
-            fontFamily: 'JetBrains Mono, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-            convertEol: true,
-            theme: {
-                background: '#0d1117',
-                foreground: '#c9d1d9',
-                cursor: '#3fb950',
-                selectionBackground: '#264f78',
-                black: '#0d1117',
-                red: '#ff7b72',
-                green: '#3fb950',
-                yellow: '#d29922',
-                blue: '#58a6ff',
-                magenta: '#bc8cff',
-                cyan: '#39c5cf',
-                white: '#b1bac4',
-                brightBlack: '#6e7681',
-                brightRed: '#ffa198',
-                brightGreen: '#56d364',
-                brightYellow: '#e3b341',
-                brightBlue: '#79c0ff',
-                brightMagenta: '#d2a8ff',
-                brightCyan: '#56d4dd',
-                brightWhite: '#f0f6fc'
-            }
-        });
-
-        const FitAddonClass = window.FitAddon?.FitAddon || window.FitAddon;
-        if (FitAddonClass) {
-            const fitAddon = new FitAddonClass();
-            term.loadAddon(fitAddon);
-            window.shellFitAddon = fitAddon;
-        }
-
-        term.open(mount);
-        if (window.shellFitAddon) {
-            setTimeout(() => window.shellFitAddon.fit(), 50);
-        }
-
-        term.onData(data => {
-            if (window.issueforgeShellSocket && window.issueforgeShellSocket.readyState === WebSocket.OPEN) {
-                window.issueforgeShellSocket.send(JSON.stringify({ type: 'input', data: data }));
-            }
-        });
-
-        window.issueforgeShellTerminal = term;
-
-        window.addEventListener('resize', () => {
-            if (window.shellFitAddon) {
-                window.shellFitAddon.fit();
-                if (window.issueforgeShellSocket && window.issueforgeShellSocket.readyState === WebSocket.OPEN && window.issueforgeShellTerminal) {
-                    window.issueforgeShellSocket.send(JSON.stringify({
-                        type: 'resize',
-                        cols: window.issueforgeShellTerminal.cols,
-                        rows: window.issueforgeShellTerminal.rows
-                    }));
-                }
-            }
-        });
-    }
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/tasks/${taskId}/sandbox-shell?run_id=${encodeURIComponent(effectiveRunId)}`;
-
-    try {
-        const ws = new WebSocket(wsUrl);
-        ws.binaryType = 'arraybuffer';
-
-        ws.onopen = function() {
-            if (window.shellFitAddon && window.issueforgeShellTerminal) {
-                window.shellFitAddon.fit();
-                ws.send(JSON.stringify({
-                    type: 'resize',
-                    cols: window.issueforgeShellTerminal.cols,
-                    rows: window.issueforgeShellTerminal.rows
-                }));
-            }
-        };
-
-        ws.onmessage = function(event) {
-            if (!window.issueforgeShellTerminal) return;
-            if (event.data instanceof ArrayBuffer) {
-                const text = new TextDecoder().decode(event.data);
-                window.issueforgeShellTerminal.write(text);
-            } else if (typeof event.data === 'string') {
-                window.issueforgeShellTerminal.write(event.data);
-            }
-        };
-
-        window.issueforgeShellSocket = ws;
-    } catch (err) {
-        console.error('Failed to connect to sandbox shell websocket:', err);
-    }
-}
-
 function switchStreamTab(tab) {
     const termContainer = document.getElementById('terminalXtermContainer');
-    const shellContainer = document.getElementById('sandboxShellContainer');
     const eventsDiv = document.getElementById('terminalLogs');
     const rawDiv = document.getElementById('sandboxRawLogs');
     const tabTerminal = document.getElementById('tabStreamTerminal');
-    const tabShell = document.getElementById('tabStreamShell');
     const tabEvents = document.getElementById('tabStreamEvents');
     const tabRaw = document.getElementById('tabStreamRaw');
 
     if (!termContainer || !eventsDiv || !rawDiv) return;
 
-    [tabTerminal, tabShell, tabEvents, tabRaw].forEach(btn => {
+    [tabTerminal, tabEvents, tabRaw].forEach(btn => {
         if (btn) btn.className = 'px-2 py-0.5 rounded text-[11px] font-medium text-slate-400 hover:text-slate-200 transition flex items-center space-x-1';
     });
 
     termContainer.classList.add('hidden');
-    if (shellContainer) shellContainer.classList.add('hidden');
     eventsDiv.classList.add('hidden');
     rawDiv.classList.add('hidden');
 
@@ -750,16 +651,6 @@ function switchStreamTab(tab) {
         }
         if (window.termFitAddon) {
             setTimeout(() => window.termFitAddon.fit(), 30);
-        }
-    } else if (tab === 'shell') {
-        if (shellContainer) shellContainer.classList.remove('hidden');
-        if (tabShell) {
-            tabShell.className = 'px-2.5 py-0.5 rounded text-[11px] font-medium bg-emerald-600 text-white transition flex items-center space-x-1 shadow-sm';
-        }
-        const taskId = window.currentTaskId || (window.location.pathname.split('/tasks/')[1] || '').split('/')[0];
-        initInteractiveShell(taskId, window.currentActiveRunId);
-        if (window.shellFitAddon) {
-            setTimeout(() => window.shellFitAddon.fit(), 30);
         }
     } else if (tab === 'events') {
         eventsDiv.classList.remove('hidden');
@@ -898,7 +789,7 @@ function renderStudioTree() {
             const folderIcon = isCollapsed ? 'folder' : 'folder-open';
 
             html += `
-                <div onclick="toggleStudioFolder('${encodeURIComponent(dir.fullPath)}')"
+                <div onclick="toggleStudioFolder('${jsArg(dir.fullPath)}')"
                     class="folder-tree-node cursor-pointer group flex items-center justify-between py-1 px-1 rounded hover:bg-slate-800/80 transition text-slate-400 hover:text-slate-200 select-none"
                     style="padding-left: ${paddingLeft}px;">
                     <div class="flex items-center space-x-1.5 truncate">
@@ -930,7 +821,7 @@ function renderStudioTree() {
             const activeClass = isActive ? 'bg-cyan-950/40 text-cyan-300 border-l-2 border-cyan-400' : 'text-slate-300 hover:bg-slate-800/60 hover:text-white';
 
             html += `
-                <div onclick="openStudioFileTab('${taskId}', '${runId}', '${encodeURIComponent(file.path)}')"
+                <div onclick="openStudioFileTab('${taskId}', '${runId}', '${jsArg(file.path)}')"
                     id="fileTreeItem_${encodeURIComponent(file.path).replace(/[^a-zA-Z0-9]/g, '_')}"
                     class="file-tree-node cursor-pointer group flex items-center justify-between py-1 px-1 rounded transition ${activeClass}"
                     style="padding-left: ${paddingLeft + 12}px;"
@@ -1075,13 +966,13 @@ function renderStudioTabs() {
             : 'bg-[#161b22] text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent';
 
         html += `
-            <div onclick="switchStudioTab('${encodeURIComponent(tab.path)}')"
+            <div onclick="switchStudioTab('${jsArg(tab.path)}')"
                 class="flex items-center space-x-1.5 px-3 py-1.5 rounded-t text-xs font-mono cursor-pointer shrink-0 transition select-none ${tabBg}"
                 title="${escapeHtml(tab.path)}">
                 <i data-lucide="${iconName}" class="w-3.5 h-3.5 ${isActive ? 'text-cyan-400' : 'text-slate-500'} shrink-0"></i>
                 <span class="max-w-[130px] truncate font-medium">${escapeHtml(fileName)}</span>
                 ${badge}
-                <button onclick="closeStudioTab(event, '${encodeURIComponent(tab.path)}')" class="hover:text-rose-400 hover:bg-slate-800 p-0.5 rounded text-slate-500 transition ml-1" title="Close tab">
+                <button onclick="closeStudioTab(event, '${jsArg(tab.path)}')" class="hover:text-rose-400 hover:bg-slate-800 p-0.5 rounded text-slate-500 transition ml-1" title="Close tab">
                     <i data-lucide="x" class="w-3 h-3"></i>
                 </button>
             </div>
@@ -1316,7 +1207,7 @@ function appendAgyCard(eventData) {
         const fileTarget = data.file;
         let fileLink = '';
         if (fileTarget) {
-            fileLink = `<button onclick="openStudioFileTab('${window.currentTaskId}', '${window.currentActiveRunId || 'run-1'}', '${encodeURIComponent(fileTarget)}')" class="inline-flex items-center space-x-1 text-cyan-400 hover:text-cyan-300 underline font-mono ml-1"><i data-lucide="external-link" class="w-3 h-3"></i><span>${escapeHtml(fileTarget)}</span></button>`;
+            fileLink = `<button onclick="openStudioFileTab('${window.currentTaskId}', '${window.currentActiveRunId || 'run-1'}', '${jsArg(fileTarget)}')" class="inline-flex items-center space-x-1 text-cyan-400 hover:text-cyan-300 underline font-mono ml-1"><i data-lucide="external-link" class="w-3 h-3"></i><span>${escapeHtml(fileTarget)}</span></button>`;
         }
 
         let paramSnippet = '';
@@ -1815,7 +1706,7 @@ function renderDiscussionComments() {
         let parsedBody = escapeHtml(c.body);
         if (window.marked) {
             try {
-                parsedBody = marked.parse(c.body);
+                parsedBody = renderMarkdown(c.body);
             } catch (e) {}
         }
 
@@ -1824,7 +1715,7 @@ function renderDiscussionComments() {
             <div class="flex items-center justify-between">
                 <div class="flex items-center space-x-2">
                     <div class="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shadow ${avatarBg}">
-                        ${initial}
+                        ${escapeHtml(initial)}
                     </div>
                     <span class="text-xs font-semibold text-slate-200">@${escapeHtml(c.author)}</span>
                     ${rolePill}
@@ -1942,7 +1833,7 @@ function renderPlanSpecification() {
 
     if (window.marked) {
         try {
-            mount.innerHTML = marked.parse(planText);
+            mount.innerHTML = renderMarkdown(planText);
             
             // Render and isolate any mermaid code blocks
             let hasMermaid = false;
@@ -2106,7 +1997,7 @@ function canvasEdgePath(from, to, fromSide, toSide) {
 
 function renderCanvasNodeText(text) {
     if (window.marked) {
-        try { return marked.parse(text || ''); } catch (e) { /* fall through */ }
+        try { return renderMarkdown(text); } catch (e) { /* fall through */ }
     }
     const div = document.createElement('div');
     div.textContent = text || '';

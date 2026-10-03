@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 from issueforge.config import settings
 from issueforge.core.events import event_bus
-from issueforge.core.models import EventType
+from issueforge.core.models import EventType, safe_path_id
 
 
 class CommandResult:
@@ -30,6 +30,28 @@ class CommandResult:
 
     def __repr__(self) -> str:
         return f"<CommandResult exit_code={self.exit_code} success={self.success} timed_out={self.timed_out} duration={self.duration:.2f}s>"
+
+
+# What a build or test toolchain legitimately needs from the server's environment.
+# Everything else (FORGE_AUTH_TOKEN, platform PATs, LLM keys exported for LiteLLM) stays
+# out of agent sessions and out of the cloned repository's own test code.
+_ENV_ALLOWLIST = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TERM", "TZ", "TMPDIR",
+    "SSH_AUTH_SOCK", "LD_LIBRARY_PATH", "CUDA_HOME", "CUDA_PATH",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+    "GIT_SSL_CAINFO", "GOPATH", "GOROOT", "CARGO_HOME", "RUSTUP_HOME", "JAVA_HOME", "NVM_DIR",
+})
+
+
+def subprocess_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """The environment for every sandbox subprocess: an allowlist, never os.environ."""
+    env = {
+        k: v for k, v in os.environ.items()
+        if k in _ENV_ALLOWLIST or k.startswith(("LC_", "XDG_")) or k.lower().endswith("_proxy")
+    }
+    if extra:
+        env.update(extra)
+    return env
 
 
 def bytecode_free_env(sandbox: "NativeSandbox") -> Dict[str, str]:
@@ -49,8 +71,8 @@ class NativeSandbox:
     _active_processes: Dict[str, Set[asyncio.subprocess.Process]] = {}
 
     def __init__(self, task_id: str, run_id: Optional[str] = None):
-        self.task_id = task_id
-        self.run_id = run_id or "run-1"
+        self.task_id = safe_path_id(task_id)
+        self.run_id = safe_path_id(run_id or "run-1")
         settings.ensure_directories()
         self.task_dir = (settings.forge_tasks_root / task_id).resolve()
         self.workspace_path = self.task_dir / "sandboxes" / self.run_id
@@ -212,10 +234,7 @@ class NativeSandbox:
         start_time = time.time()
         start_iso = datetime.now(timezone.utc).isoformat()
 
-        # Build clean environment
-        env = os.environ.copy()
-        if env_vars:
-            env.update(env_vars)
+        env = subprocess_env(env_vars)
 
         if emit_events:
             await event_bus.emit_log(

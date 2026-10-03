@@ -308,10 +308,10 @@ for CI, tag `vX.Y.Z`, then upload with `uv publish`. A PyPI version number can n
     `?token=` or the cookie, because browsers cannot set headers on them.
 
 20. **WebSockets need their own guard.** `BaseHTTPMiddleware` never sees WebSocket connections, so
-    `terminal_websocket` and `sandbox_shell_websocket` call `websocket_is_allowed` before
-    `accept()`. It checks the token and rejects a present `Origin` whose host:port differs from
-    `Host`: browsers apply no CORS to WebSockets, and without that check any page the operator
-    visits could open the bash shell. Any new WebSocket route must call it too.
+    `terminal_websocket` calls `websocket_is_allowed` before `accept()`. It checks the token and
+    rejects a present `Origin` whose host:port differs from `Host`: browsers apply no CORS to
+    WebSockets. Any new WebSocket route must call it too. (A bash sandbox-shell route existed
+    with no UI reaching it; it was removed rather than guarded — don't bring it back.)
 
 21. **Quote everything interpolated into a shell command.** `NativeSandbox.run_command` uses
     `create_subprocess_shell`, so file paths, branch names, commit messages and URLs go through

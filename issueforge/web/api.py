@@ -20,6 +20,7 @@ from issueforge.core.models import (
     EventType,
     PlatformType,
     Task,
+    safe_path_id,
     TaskCreateRequest,
     TaskEvent,
     TaskStatus,
@@ -545,51 +546,6 @@ async def terminal_websocket(websocket: WebSocket, task_id: str, run_id: Optiona
         terminal_manager.unregister_websocket(task_id, effective_run, websocket)
 
 
-@router.websocket("/ws/tasks/{task_id}/sandbox-shell")
-async def sandbox_shell_websocket(websocket: WebSocket, task_id: str, run_id: Optional[str] = Query(None)):
-    """Interactive WebSocket endpoint spawning a direct bash PTY inside the sandbox workspace."""
-    from issueforge.core.terminal_manager import shell_manager
-    from issueforge.web.auth import websocket_is_allowed
-
-    if not websocket_is_allowed(websocket):
-        await websocket.close(code=1008)
-        return
-
-    await websocket.accept()
-
-    task = await get_task(task_id)
-    effective_run = run_id or (task.active_run_id if task else None) or "run-1"
-    from issueforge.core.task_dossier import TaskDossierManager
-    sandbox_dir = (TaskDossierManager.get_task_dir(task_id) / "sandboxes" / effective_run).resolve()
-
-    shell = await shell_manager.get_or_create_shell(task_id, effective_run, sandbox_dir)
-    shell.websockets.add(websocket)
-
-    try:
-        while True:
-            msg = await websocket.receive_text()
-            if not msg:
-                continue
-            try:
-                payload = json.loads(msg)
-                msg_type = payload.get("type")
-                if msg_type == "input":
-                    data_str = payload.get("data", "")
-                    shell.write_input(data_str.encode("utf-8"))
-                elif msg_type == "resize":
-                    cols = int(payload.get("cols", 80))
-                    rows = int(payload.get("rows", 24))
-                    shell.set_window_size(cols=cols, rows=rows)
-            except json.JSONDecodeError:
-                shell.write_input(msg.encode("utf-8"))
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        logger.debug("Sandbox shell websocket disconnected: %s", e)
-    finally:
-        shell.websockets.discard(websocket)
-
-
 class SteerRequest(BaseModel):
     directive: str
 
@@ -948,7 +904,8 @@ async def dashboard_codespace(request: Request, task_id: str, run: Optional[str]
     task = await get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    active_run = run or task.active_run_id or (task.runs[-1].run_id if task.runs else "run-1")
+    # Validated: it is interpolated into inline JS on the page (UnsafeIdError -> 400).
+    active_run = safe_path_id(run or task.active_run_id or (task.runs[-1].run_id if task.runs else "run-1"))
     return templates.TemplateResponse(
         request=request,
         name="codespace.html",

@@ -2,8 +2,8 @@ import logging
 import re
 import shlex
 import shutil
-from typing import List, Optional, Tuple
-from urllib.parse import urlparse, urlunparse
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from issueforge.config import settings
 from issueforge.core.models import FileDiff
@@ -33,34 +33,50 @@ class GitRepoManager:
         self.base_branch = base_branch
         self.working_branch = working_branch
 
-    def _get_authenticated_url(self) -> str:
-        """Inject GitHub/GitLab tokens into HTTPS URLs if available."""
-        url = self.raw_repo_url.strip()
-        parsed = urlparse(url)
+    def credential_env(self) -> Dict[str, str]:
+        """Env that lets git authenticate to this repository's host.
 
-        if parsed.scheme in ("http", "https"):
-            if "github.com" in parsed.netloc and settings.github_token:
-                netloc = f"x-access-token:{settings.github_token}@{parsed.hostname}"
-                if parsed.port:
-                    netloc += f":{parsed.port}"
-                return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
-            elif "gitlab" in parsed.netloc and settings.gitlab_token:
-                netloc = f"oauth2:{settings.gitlab_token}@{parsed.hostname}"
-                if parsed.port:
-                    netloc += f":{parsed.port}"
-                return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
-
-        return url
+        The token travels only in the git process's environment, read by a credential
+        helper scoped to the exact host. It never appears in the URL, so it stays out of
+        the logged command line (SSE, the events table, sandbox.log) and out of the
+        workspace's .git/config, which agents and the repo's own tests can read.
+        """
+        parsed = urlparse(self.raw_repo_url.strip())
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return {}
+        host = parsed.hostname.lower()
+        # Exact host match: a substring test sent the PAT to e.g. github.com.evil.io.
+        if host == "github.com" and settings.github_token:
+            username, token = "x-access-token", settings.github_token
+        elif host == (urlparse(settings.gitlab_url).hostname or "").lower() and settings.gitlab_token:
+            username, token = "oauth2", settings.gitlab_token
+        else:
+            return {}
+        scope = f"{parsed.scheme}://{host}" + (f":{parsed.port}" if parsed.port else "")
+        return {
+            "ISSUEFORGE_GIT_TOKEN": token,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_KEY_0": f"credential.{scope}.username",
+            "GIT_CONFIG_VALUE_0": username,
+            # The empty value resets helpers from the user's own git config for this host.
+            "GIT_CONFIG_KEY_1": f"credential.{scope}.helper",
+            "GIT_CONFIG_VALUE_1": "",
+            "GIT_CONFIG_KEY_2": f"credential.{scope}.helper",
+            "GIT_CONFIG_VALUE_2": '!f() { test "$1" = get && echo "password=$ISSUEFORGE_GIT_TOKEN"; }; f',
+        }
 
     async def clone_repository(self, depth: int = 50) -> bool:
         """Clone repository into the sandbox and configure git author."""
         self.sandbox.setup()
-        auth_url = self._get_authenticated_url()
+        url = self.raw_repo_url.strip()
 
         # Check if already cloned
         if (self.sandbox.workspace_path / ".git").exists():
             self._exclude_agent_artifacts()
-            res = await self.sandbox.run_command("git fetch origin")
+            # Sandboxes cloned by older versions kept the token in the origin URL.
+            await self.sandbox.run_command(f"git remote set-url origin {shlex.quote(url)}", emit_events=False)
+            res = await self.sandbox.run_command("git fetch origin", env_vars=self.credential_env())
             return res.success
 
         # If the directory has any leftover files but no .git, clean it up so git clone . succeeds
@@ -72,8 +88,8 @@ class GitRepoManager:
                     item.unlink(missing_ok=True)
 
         # Clone into current directory with --no-single-branch so all remote branches are tracked
-        clone_cmd = f"git clone --depth {depth} --no-single-branch {shlex.quote(auth_url)} ."
-        res = await self.sandbox.run_command(clone_cmd)
+        clone_cmd = f"git clone --depth {depth} --no-single-branch {shlex.quote(url)} ."
+        res = await self.sandbox.run_command(clone_cmd, env_vars=self.credential_env())
         if not res.success:
             return False
 
@@ -117,7 +133,7 @@ class GitRepoManager:
         Fetch remote branches from origin and return clean branch names.
         Examples: ['main', 'develop', 'staging', 'feat/login']
         """
-        await self.sandbox.run_command('git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*" 2>/dev/null; git fetch --all --prune')
+        await self.sandbox.run_command('git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*" 2>/dev/null; git fetch --all --prune', env_vars=self.credential_env())
         res = await self.sandbox.run_command("git branch -r")
         branches: List[str] = []
         if res.success and res.stdout:
@@ -223,12 +239,9 @@ class GitRepoManager:
 
     async def push_working_branch(self) -> bool:
         """Push the working branch to remote."""
-        auth_url = self._get_authenticated_url()
-        # Set origin URL with auth
-        await self.sandbox.run_command(f"git remote set-url origin {shlex.quote(auth_url)}")
         # Lease, not --force: overwrite only our own earlier push of this branch, never
         # commits someone else pushed to it since the clone.
-        res = await self.sandbox.run_command(f"git push -u origin {shlex.quote(self.working_branch)} --force-with-lease")
+        res = await self.sandbox.run_command(f"git push -u origin {shlex.quote(self.working_branch)} --force-with-lease", env_vars=self.credential_env())
         return res.success
 
     async def abort_merge(self) -> bool:

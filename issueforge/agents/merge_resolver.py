@@ -10,6 +10,7 @@ from issueforge.config import settings
 from issueforge.core.events import event_bus
 from issueforge.core.models import AgentRole, EventType, Task
 from issueforge.core.sandbox import NativeSandbox, bytecode_free_env
+from issueforge.git.repo_manager import GitRepoManager
 from issueforge.graph.blast_radius import BlastRadius, analyze_workspace
 
 logger = logging.getLogger("issueforge.agents.merge_resolver")
@@ -71,8 +72,8 @@ class MergeConflictResolver:
         except Exception:
             pass
 
-    async def _git(self, command: str, timeout: int = 120):
-        return await self.sandbox.run_command(command, timeout=timeout, emit_events=False)
+    async def _git(self, command: str, timeout: int = 120, env_vars=None):
+        return await self.sandbox.run_command(command, timeout=timeout, emit_events=False, env_vars=env_vars)
 
     async def abort_merge(self) -> None:
         """Return the workspace to a clean pre-merge state. Safe to call unconditionally."""
@@ -92,7 +93,8 @@ class MergeConflictResolver:
         or `abort_merge`.
         """
         self.probe_error = None
-        fetch = await self._git(f"git fetch origin {shlex.quote(target_branch)}")
+        creds = GitRepoManager(self.sandbox, self.task.repo_url).credential_env() if self.task else None
+        fetch = await self._git(f"git fetch origin {shlex.quote(target_branch)}", env_vars=creds)
         if not fetch.success:
             # Merging a stale origin/<target> would "pass" against code that is not
             # what the PR will actually merge into.

@@ -93,29 +93,6 @@ def test_terminal_raw_rest_endpoint(tmp_path):
         assert "Historical ANSI Output" in res.text
 
 
-def test_interactive_shell_session_lifecycle(tmp_path):
-    """Test InteractiveShellSession start, write, resize, and stop."""
-    from issueforge.core.terminal_manager import InteractiveShellSession
-
-    sandbox_cwd = tmp_path / "sandbox-workspace"
-    shell = InteractiveShellSession(task_id="test-shell", run_id="run-1", cwd=sandbox_cwd)
-    shell.start()
-
-    assert shell._running is True
-    assert shell.master_fd is not None
-
-    # Test resize
-    assert shell.set_window_size(100, 30) is True
-
-    # Test writing input
-    assert shell.write_input(b"echo 'shell ready'\n") is True
-
-    # Stop session
-    shell.stop()
-    assert shell._running is False
-    assert shell.master_fd is None
-
-
 @pytest.mark.asyncio
 async def test_steer_task_api(tmp_path):
     """Test POST /api/tasks/{task_id}/steer endpoint."""

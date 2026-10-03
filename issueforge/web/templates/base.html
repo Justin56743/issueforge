@@ -79,10 +79,11 @@
     </footer>
 
     <script src="/static/vendor/marked.min.js"></script>
+    <script src="/static/vendor/purify.min.js"></script>
     <script src="/static/vendor/mermaid.min.js"></script>
     <script>
         if (window.mermaid) {
-            mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+            mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
         }
     </script>
     <script src="/static/js/dashboard.js"></script>

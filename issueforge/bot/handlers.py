@@ -469,19 +469,23 @@ async def handle_user_text_reply(message: Message):
     reply_summary = decision.get("reply_summary", "")
 
     if intent == "CREATE_AND_RUN_TASK":
-        # Resolve target repo & default branch from recent tasks or settings
-        default_repo_url = "https://gitlab.com/anujdeulkar/issueforge.git"
-        default_platform = PlatformType.GITLAB
-        default_base = "main"
-        default_candidates = ["main", "v1"]
+        # The repository comes from the most recent task; with none there is nothing to
+        # infer it from, and guessing would run an agent against someone else's repo.
+        if not recent_tasks:
+            await typing_msg.edit_text(
+                "ℹ️ <b>Orchestrator:</b> I don't know which repository to work on yet. "
+                "Create the first task from the dashboard or an issue, then message me again.",
+                parse_mode="HTML"
+            )
+            return
+        default_repo_url = recent_tasks[0].repo_url
+        default_platform = recent_tasks[0].platform
+        default_base = recent_tasks[0].base_branch or "main"
+        default_candidates = recent_tasks[0].target_branch_candidates or [default_base]
 
-        if recent_tasks:
-            default_repo_url = recent_tasks[0].repo_url
-            default_platform = recent_tasks[0].platform
-            default_base = recent_tasks[0].base_branch or "main"
-            default_candidates = recent_tasks[0].target_branch_candidates or [default_base]
-
-        target_branch = decision.get("target_branch") or default_base
+        # Only a branch the operator actually named counts as chosen. A defaulted one must
+        # leave target_branch_confirmed False so the pipeline stops at the branch gate.
+        target_branch = decision.get("target_branch") or None
         title = decision.get("task_title") or (user_text[:80] + ("..." if len(user_text) > 80 else ""))
         description = decision.get("task_description") or user_text
 
@@ -534,7 +538,8 @@ async def handle_user_text_reply(message: Message):
                 parse_mode="HTML"
             )
         elif matched_task and sub_action == "CANCEL":
-            await task_queue.reject_task(matched_task.id)
+            # cancel_task stops the running pipeline; reject_task only relabels it.
+            await task_queue.cancel_task(matched_task.id)
             await typing_msg.edit_text(
                 f"🛑 <b>Orchestrator:</b> Cancelled task <code>{matched_task.id}</code>.",
                 parse_mode="HTML"

@@ -426,6 +426,12 @@ Test Result: Passed ({test_result.test_runner})
 
         # Fallback heuristic parser
         lower = instruction.lower()
+
+        def mentions(*phrases: str) -> bool:
+            # Whole words only: as substrings, "skill" contained "kill" and cancelled the
+            # latest task, and "restart" contained "start" and approved it.
+            return re.search(r"\b(?:" + "|".join(map(re.escape, phrases)) + r")\b", lower) is not None
+
         words = instruction.split()
         ref_id = None
         if recent_tasks:
@@ -440,28 +446,28 @@ Test Result: Passed ({test_result.test_runner})
                     ref_id = cleaned
                     break
 
-        if any(w in lower for w in ["approve", "start", "launch", "run issue", "run task"]):
+        if mentions("approve", "start", "launch", "run issue", "run task"):
             return {
                 "intent": "TASK_ACTION",
                 "task_action": "APPROVE",
                 "referenced_task_id": ref_id,
                 "reply_summary": f"Approving and initiating sandbox for {ref_id or 'the active task'}."
             }
-        elif any(w in lower for w in ["cancel", "stop", "kill", "halt"]):
+        elif mentions("cancel", "stop", "kill", "halt"):
             return {
                 "intent": "TASK_ACTION",
                 "task_action": "CANCEL",
                 "referenced_task_id": ref_id,
                 "reply_summary": f"Stopping and cancelling {ref_id or 'the active task'}."
             }
-        elif any(w in lower for w in ["retry", "rerun", "try again"]):
+        elif mentions("retry", "rerun", "try again"):
             return {
                 "intent": "TASK_ACTION",
                 "task_action": "RETRY",
                 "referenced_task_id": ref_id,
                 "reply_summary": f"Retrying task {ref_id or 'the active task'} with a clean sandbox."
             }
-        elif any(w in lower for w in ["steer", "directive", "instruct", "guidance", "tell coder", "tell agent"]):
+        elif mentions("steer", "directive", "instruct", "guidance", "tell coder", "tell agent"):
             clean_directive = instruction
             for kw in ["steer", "directive", "guidance"]:
                 if kw in lower:
@@ -474,7 +480,7 @@ Test Result: Passed ({test_result.test_runner})
                 "steering_directive": clean_directive or instruction,
                 "reply_summary": f"Injected mid-flight steering directive for {ref_id or 'the active task'}: '{clean_directive or instruction}'."
             }
-        elif any(w in lower for w in ["status", "what is running", "what's running", "progress"]):
+        elif mentions("status", "what is running", "what's running", "progress"):
             return {
                 "intent": "STATUS_QUERY",
                 "reply_summary": "Here is the current system status."
