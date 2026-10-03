@@ -145,7 +145,7 @@ async def test_sandbox_realtime_streaming_and_termination():
     # Give it a fraction of a second to spawn the process
     await asyncio.sleep(0.2)
     assert task_id in NativeSandbox._active_processes
-    proc = NativeSandbox._active_processes[task_id]
+    (proc,) = NativeSandbox._active_processes[task_id]
     assert proc.returncode is None
 
     # Terminate the process

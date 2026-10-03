@@ -1,5 +1,7 @@
+import os
 import re
-from typing import Optional, Tuple
+import shlex
+from typing import Dict, Optional, Tuple
 
 from issueforge.config import settings
 from issueforge.core.events import event_bus
@@ -22,7 +24,7 @@ class TesterAgent:
         if self.sandbox.file_exists("Makefile"):
             try:
                 makefile = self.sandbox.read_file("Makefile")
-                if "test:" in makefile or "check:" in makefile:
+                if re.search(r"^test\s*:", makefile, re.MULTILINE):
                     return "make test"
             except Exception:
                 pass
@@ -80,6 +82,49 @@ class TesterAgent:
             return "bash test.sh"
 
         return None
+
+    async def _prepare_dependencies(self) -> Dict[str, str]:
+        """Install the project's dependencies so the suite tests the code, not the host.
+
+        Python deps go into a venv under the run's metadata dir, outside the git workspace,
+        built with --system-site-packages so host-installed tools such as pytest still
+        resolve. Returns the env that puts it first on PATH, or {} when there is none.
+        Install failures are logged and tolerated: the test run then shows the real error.
+        """
+        if self.sandbox.file_exists("package.json") and not self.sandbox.file_exists("node_modules"):
+            npm = "npm ci" if self.sandbox.file_exists("package-lock.json") else "npm install"
+            await self._install(npm)
+
+        if not any(self.sandbox.file_exists(f) for f in ("pyproject.toml", "setup.py", "requirements.txt")):
+            return {}
+        venv = self.sandbox.meta_dir / "venv"
+        venv_python = venv / "bin" / "python3"
+        # ponytail: built once per run; a dependency the Coder adds during a repair loop is
+        # not installed. Re-run the installs each pass if that turns out to matter.
+        if not venv_python.exists():
+            if await self._install(f"python3 -m venv --system-site-packages {shlex.quote(str(venv))}"):
+                pip = f"{shlex.quote(str(venv_python))} -m pip install -q"
+                if self.sandbox.file_exists("requirements.txt"):
+                    await self._install(f"{pip} -r requirements.txt")
+                if self.sandbox.file_exists("pyproject.toml") or self.sandbox.file_exists("setup.py"):
+                    # pip only warns about extras a project does not define.
+                    await self._install(f"{pip} -e '.[dev,test]'")
+        if not venv_python.exists():
+            return {}
+        return {"PATH": f"{venv / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}", "VIRTUAL_ENV": str(venv)}
+
+    async def _install(self, command: str) -> bool:
+        result = await self.sandbox.run_command(command, timeout=600, env_vars=bytecode_free_env(self.sandbox))
+        if not result.success:
+            await event_bus.emit_log(
+                task_id=self.task.id,
+                run_id=self.sandbox.run_id,
+                message=f"⚠️ Dependency install failed (`{command}`); running tests anyway.",
+                role=AgentRole.TESTER.value,
+                event_type=EventType.LOG,
+                data={"stderr": result.stderr[-1000:]},
+            )
+        return result.success
 
     async def execute(self, custom_command: Optional[str] = None) -> TestResult:
         run_id = self.sandbox.run_id or "run-1"
@@ -173,7 +218,8 @@ class TesterAgent:
             data={"command": test_cmd}
         )
 
-        result = await self.sandbox.run_command(test_cmd, timeout=180)
+        dep_env = await self._prepare_dependencies()
+        result = await self.sandbox.run_command(test_cmd, timeout=180, env_vars=dep_env or None)
         combined_output = (result.stdout + "\n" + result.stderr).strip()
 
         if result.stdout:
@@ -224,10 +270,11 @@ class TesterAgent:
         unittest_ran = re.search(r"Ran (\d+) tests?", combined_output)
         if unittest_ran:
             total_tests = int(unittest_ran.group(1))
-            if "OK" in combined_output:
+            # Whole-line matches: a bare substring test counted "BROKEN" as "OK".
+            if re.search(r"^OK\b", combined_output, re.MULTILINE) and not re.search(r"^FAILED \(", combined_output, re.MULTILINE):
                 passed_tests = total_tests
                 passed = True
-            elif "FAILED" in combined_output:
+            elif re.search(r"^FAILED \(", combined_output, re.MULTILINE):
                 fail_match = re.search(r"failures=(\d+)", combined_output)
                 err_match = re.search(r"errors=(\d+)", combined_output)
                 f = int(fail_match.group(1)) if fail_match else 0

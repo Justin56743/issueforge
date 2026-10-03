@@ -7,7 +7,7 @@ import shutil
 import signal
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,9 @@ def bytecode_free_env(sandbox: "NativeSandbox") -> Dict[str, str]:
 class NativeSandbox:
     """Manages isolated native filesystem workspaces and secure subprocess execution on Jetson Orin."""
 
-    _active_processes: Dict[str, asyncio.subprocess.Process] = {}
+    # Every live subprocess per task: agy sessions and sandbox commands can overlap (a
+    # dashboard diff request runs git while an agent works), and cancel must reach all.
+    _active_processes: Dict[str, Set[asyncio.subprocess.Process]] = {}
 
     def __init__(self, task_id: str, run_id: Optional[str] = None):
         self.task_id = task_id
@@ -58,30 +60,41 @@ class NativeSandbox:
 
 
     @classmethod
-    def terminate_task_process(cls, task_id: str) -> bool:
-        """Immediately terminate any active subprocess running in the sandbox for task_id."""
-        proc = cls._active_processes.get(task_id)
-        if proc and proc.returncode is None:
+    def register_process(cls, task_id: str, proc: asyncio.subprocess.Process) -> None:
+        cls._active_processes.setdefault(task_id, set()).add(proc)
+
+    @classmethod
+    def unregister_process(cls, task_id: str, proc: asyncio.subprocess.Process) -> None:
+        procs = cls._active_processes.get(task_id)
+        if procs is not None:
+            procs.discard(proc)
+            if not procs:
+                del cls._active_processes[task_id]
+
+    @staticmethod
+    def kill_process_group(proc: asyncio.subprocess.Process) -> bool:
+        """Kill a process started with start_new_session=True and everything it spawned."""
+        if proc.returncode is not None:
+            return False
+        for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
-            except Exception:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-            try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGKILL)
+                os.killpg(os.getpgid(proc.pid), sig)
+            except ProcessLookupError:
+                break
             except Exception:
                 try:
                     proc.kill()
                 except Exception:
                     pass
-            return True
-        return False
+        return True
+
+    @classmethod
+    def terminate_task_process(cls, task_id: str) -> bool:
+        """Immediately terminate every active subprocess running for task_id."""
+        killed = False
+        for proc in list(cls._active_processes.get(task_id, ())):
+            killed = cls.kill_process_group(proc) or killed
+        return killed
 
     def setup(self) -> Path:
         """Create the workspace and metadata directories if they don't exist and inject agent skills."""
@@ -254,6 +267,7 @@ class NativeSandbox:
                             event_type=EventType.LOG
                         )
 
+        process = None
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
@@ -263,7 +277,7 @@ class NativeSandbox:
                 env=env,
                 start_new_session=True
             )
-            NativeSandbox._active_processes[self.task_id] = process
+            NativeSandbox.register_process(self.task_id, process)
 
             try:
                 await asyncio.wait_for(
@@ -278,7 +292,7 @@ class NativeSandbox:
             except asyncio.TimeoutError:
                 timed_out = True
                 exit_code = 124
-                NativeSandbox.terminate_task_process(self.task_id)
+                NativeSandbox.kill_process_group(process)
                 msg = f"Command timed out after {timeout_sec}s: {command}"
                 stderr_lines.append(msg + "\n")
                 self._append_to_file(self.log_file, f"  [timeout] {msg}\n")
@@ -289,7 +303,7 @@ class NativeSandbox:
                         event_type=EventType.ERROR
                     )
             except asyncio.CancelledError:
-                NativeSandbox.terminate_task_process(self.task_id)
+                NativeSandbox.kill_process_group(process)
                 self._append_to_file(self.log_file, f"[{datetime.now(timezone.utc).isoformat()}] Status: CANCELLED\n{'-' * 80}\n")
                 raise
 
@@ -307,7 +321,8 @@ class NativeSandbox:
                     event_type=EventType.ERROR
                 )
         finally:
-            NativeSandbox._active_processes.pop(self.task_id, None)
+            if process is not None:
+                NativeSandbox.unregister_process(self.task_id, process)
 
         duration = time.time() - start_time
         stdout = "".join(stdout_lines)

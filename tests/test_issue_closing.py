@@ -44,7 +44,7 @@ async def test_gitlab_client_close_issue():
 
 
 @pytest.mark.asyncio
-async def test_engine_push_and_create_pr_closes_github_issue(tmp_path):
+async def test_engine_push_leaves_github_issue_for_closes_keyword(tmp_path):
     await init_db()
     engine = IssueforgeAgentEngine()
 
@@ -74,6 +74,7 @@ async def test_engine_push_and_create_pr_closes_github_issue(tmp_path):
     await save_task(task)
 
     with patch("issueforge.git.repo_manager.GitRepoManager.commit_changes", new=AsyncMock(return_value=True)), \
+         patch("issueforge.agents.engine.MergeConflictResolver.execute_resolution_pipeline", new=AsyncMock(return_value=(True, "clean"))), \
          patch("issueforge.git.repo_manager.GitRepoManager.push_working_branch", new=AsyncMock(return_value=True)), \
          patch.object(engine.github_client, "create_pull_request", new=AsyncMock(return_value={"html_url": "https://github.com/octocat/hello-world/pull/1", "number": 1})) as mock_create_pr, \
          patch.object(engine.github_client, "update_issue_labels", new=AsyncMock(return_value=True)) as mock_update_labels, \
@@ -89,12 +90,12 @@ async def test_engine_push_and_create_pr_closes_github_issue(tmp_path):
         assert "Closes #88" in pr_call_kwargs["body"]
         # Verify labels updated
         mock_update_labels.assert_called_once_with("octocat", "hello-world", 88, ["bug", "security"])
-        # Verify remote issue closed
-        mock_close_issue.assert_called_once_with("octocat", "hello-world", 88)
+        # The issue closes when the PR merges (via "Closes #88"), not when the branch is pushed.
+        mock_close_issue.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_engine_push_and_create_pr_closes_gitlab_issue(tmp_path):
+async def test_engine_push_leaves_gitlab_issue_for_closes_keyword(tmp_path):
     await init_db()
     engine = IssueforgeAgentEngine()
 
@@ -124,6 +125,7 @@ async def test_engine_push_and_create_pr_closes_gitlab_issue(tmp_path):
     await save_task(task)
 
     with patch("issueforge.git.repo_manager.GitRepoManager.commit_changes", new=AsyncMock(return_value=True)), \
+         patch("issueforge.agents.engine.MergeConflictResolver.execute_resolution_pipeline", new=AsyncMock(return_value=(True, "clean"))), \
          patch("issueforge.git.repo_manager.GitRepoManager.push_working_branch", new=AsyncMock(return_value=True)), \
          patch.object(engine.gitlab_client, "create_merge_request", new=AsyncMock(return_value={"web_url": "https://gitlab.com/acme/backend/-/merge_requests/5", "iid": 5})) as mock_create_mr, \
          patch.object(engine.gitlab_client, "update_issue_metadata", new=AsyncMock(return_value={"id": 142})) as mock_update_meta, \
@@ -139,5 +141,4 @@ async def test_engine_push_and_create_pr_closes_gitlab_issue(tmp_path):
         assert "Closes #142" in mr_call_kwargs["description"]
         # Verify issue metadata/labels updated
         mock_update_meta.assert_called_once_with("acme/backend", 142, labels=["feature"])
-        # Verify GitLab remote issue closed
-        mock_close_issue.assert_called_once_with("acme/backend", 142)
+        mock_close_issue.assert_not_called()

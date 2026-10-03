@@ -350,3 +350,104 @@ def test_extract_json_handles_every_shape_the_agents_see():
     # Unparseable input returns None rather than raising
     assert extract_json("not json at all") is None
     assert extract_json("") is None
+
+
+async def test_resuming_after_the_branch_gate_reuses_the_paused_run():
+    """Confirming a branch continues run-1; it must not leave run-1 stuck at the gate
+    and start run-2. A cancelled pause, by contrast, is over: retry starts a new run."""
+    from unittest.mock import AsyncMock, patch
+
+    from issueforge.agents.engine import IssueforgeAgentEngine
+    from issueforge.core.database import get_task, save_task
+    from issueforge.core.models import ReviewSummary, TaskStatus, TestResult
+    from issueforge.core.queue import task_queue
+
+    task = create_mock_task()
+    task.id = "test-branch-resume-same-run"
+    task.target_branch_confirmed = False
+    await save_task(task)
+    review = ReviewSummary(
+        summary="s", risk_assessment="Low", test_verification="ok",
+        suggested_commit_message="feat: x", suggested_pr_title="x", suggested_pr_body="x",
+    )
+
+    with patch("issueforge.agents.engine.GitRepoManager") as mock_git_cls, \
+         patch("issueforge.agents.orchestrator.SupervisoryOrchestrator.triage_task", new=AsyncMock(return_value=(False, None))), \
+         patch("issueforge.agents.orchestrator.SupervisoryOrchestrator.record_task_learning", new=AsyncMock()), \
+         patch("issueforge.agents.planner.PlannerAgent.execute", new=AsyncMock(return_value="- [ ] Do it")), \
+         patch("issueforge.agents.coder.CoderAgent.execute", new=AsyncMock(return_value=["a.py"])), \
+         patch("issueforge.agents.tester.TesterAgent.execute", new=AsyncMock(return_value=TestResult(passed=True, total_tests=1, passed_tests=1))), \
+         patch("issueforge.agents.reviewer.ReviewerAgent.execute", new=AsyncMock(return_value=review)):
+        mock_git = mock_git_cls.return_value
+        mock_git.clone_repository = AsyncMock(return_value=True)
+        mock_git.create_working_branch = AsyncMock()
+        mock_git.get_remote_branches = AsyncMock(return_value=["main", "develop"])
+        mock_git.get_changed_file_paths = AsyncMock(return_value=["a.py"])
+        mock_git.get_diff = AsyncMock(return_value=("1 file changed", "diff --git a/a.py b/a.py", []))
+
+        engine = IssueforgeAgentEngine()
+        paused = await engine.execute_task_pipeline(task.id)
+        assert paused.status == TaskStatus.AWAITING_BRANCH_SELECTION
+
+        with patch.object(task_queue, "start_execution_background"):
+            await task_queue.set_target_branch(task.id, "develop")
+        done = await engine.execute_task_pipeline(task.id)
+
+        assert done.status == TaskStatus.AWAITING_CONFIRMATION
+        assert [r.run_id for r in done.runs] == ["run-1"]
+        assert done.runs[0].status == TaskStatus.AWAITING_CONFIRMATION
+
+        # Cancelling a task that is paused at the gate closes that run.
+        second = create_mock_task()
+        second.id = "test-branch-cancel-paused"
+        await save_task(second)
+        await engine.execute_task_pipeline(second.id)
+        cancelled = await task_queue.cancel_task(second.id)
+        assert cancelled.runs[0].status == TaskStatus.CANCELLED
+        await engine.execute_task_pipeline(second.id)
+        assert [r.run_id for r in (await get_task(second.id)).runs] == ["run-1", "run-2"]
+
+
+async def test_unittest_failure_is_not_read_as_ok_because_of_a_substring():
+    """'BROKEN' contains 'OK'; the old substring check passed a failing suite."""
+    sandbox = NativeSandbox("test-tester-ok-substring")
+    sandbox.setup()
+    tester = TesterAgent(sandbox=sandbox, task=create_mock_task())
+    result = await tester.execute(
+        custom_command="printf 'Ran 2 tests in 0.1s\\nBROKEN pipe\\n\\nFAILED (failures=1)\\n' >&2; exit 1"
+    )
+    assert result.passed is False
+    assert result.failed_tests == 1
+    sandbox.cleanup()
+
+
+def test_makefile_with_only_a_check_target_is_not_run_as_make_test():
+    sandbox = NativeSandbox("test-tester-make-check")
+    sandbox.setup()
+    sandbox.write_file("Makefile", "check:\n\techo checking\n")
+    assert TesterAgent(sandbox=sandbox, task=create_mock_task()).detect_test_command() != "make test"
+    sandbox.write_file("Makefile", "build:\n\techo b\ntest:\n\techo t\n")
+    assert TesterAgent(sandbox=sandbox, task=create_mock_task()).detect_test_command() == "make test"
+    sandbox.cleanup()
+
+
+async def test_python_suite_runs_inside_a_dependency_venv_outside_the_workspace():
+    """Tests ran on the bare host interpreter, so any project with dependencies failed on
+    imports and burned every repair loop."""
+    sandbox = NativeSandbox("test-tester-venv")
+    sandbox.setup()
+    sandbox.write_file("requirements.txt", "")
+    sandbox.write_file(
+        "test_env.py",
+        "import os, sys, unittest\n"
+        "class T(unittest.TestCase):\n"
+        "    def test_venv(self):\n"
+        "        self.assertEqual(os.path.realpath(sys.prefix), os.path.realpath(os.environ['VIRTUAL_ENV']))\n",
+    )
+    tester = TesterAgent(sandbox=sandbox, task=create_mock_task())
+    result = await tester.execute(custom_command="python3 -m unittest discover -p 'test_*.py'")
+
+    assert result.passed is True, result.stderr
+    assert (sandbox.meta_dir / "venv").is_dir()
+    assert not (sandbox.workspace_path / "venv").exists()
+    sandbox.cleanup()

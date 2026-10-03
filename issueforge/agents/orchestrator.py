@@ -245,9 +245,9 @@ Custom Instructions:
     async def run_planner(self, memory_context: str = "") -> str:
         """Dispatch plan generation to PlannerAgent with harness memory."""
         planner = PlannerAgent(sandbox=self.sandbox, task=self.task)
-        if memory_context:
-            self.task.custom_instructions = f"{self.task.custom_instructions or ''}\n\n{memory_context}".strip()
-        return await planner.execute()
+        # Passed per call, never written into task.custom_instructions: that field is
+        # persisted, so the memory block would be appended again on every run.
+        return await planner.execute(memory_context=memory_context)
 
     async def run_coder(self, plan: str, test_feedback: Optional[str] = None) -> List[str]:
         """Dispatch implementation to CoderAgent."""

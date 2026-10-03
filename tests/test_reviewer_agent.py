@@ -121,3 +121,19 @@ async def test_reviewer_fallback_to_llm(tmp_path):
         assert "**Risk Level:** Medium" in review_file.read_text(encoding="utf-8")
 
     sandbox.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_failed_review_reports_unknown_risk_not_low():
+    """When neither agy nor the API produced a review, "Low" told the operator a diff
+    nobody looked at was safe to push."""
+    sandbox = NativeSandbox("test-reviewer-unavailable")
+    sandbox.setup()
+    reviewer = ReviewerAgent(task=create_mock_task(), sandbox=sandbox)
+
+    with patch("issueforge.agents.reviewer.AgySessionRunner.run_prompt", new=AsyncMock(return_value=(False, ""))), \
+         patch("issueforge.agents.reviewer.call_llm_with_fallback", new=AsyncMock(side_effect=RuntimeError("quota"))):
+        summary = await reviewer.execute("1 file changed", "diff --git a/x b/x", TestResult(passed=True))
+
+    assert summary.risk_assessment.startswith("Unknown")
+    sandbox.cleanup()

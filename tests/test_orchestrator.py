@@ -147,3 +147,26 @@ async def test_orchestrator_learning_and_memory(tmp_path):
     assert "FastAPI SSE Streaming Pattern" in memory
 
     sandbox.cleanup()
+
+
+async def test_harness_memory_reaches_planner_without_growing_custom_instructions():
+    """custom_instructions is persisted; appending the memory block to it made the field
+    grow by one copy of the memory (and failure context) on every run."""
+    sandbox = NativeSandbox("test-orch-memory")
+    task = Task(
+        id="test-orch-memory",
+        title="t",
+        description="d",
+        repo_url="https://github.com/org/repo.git",
+        repo_name="org/repo",
+        working_branch="forge/m",
+        custom_instructions="operator note",
+    )
+    orchestrator = SupervisoryOrchestrator(sandbox=sandbox, task=task)
+
+    with patch("issueforge.agents.planner.PlannerAgent.execute", new=AsyncMock(return_value="plan")) as mock_plan:
+        await orchestrator.run_planner(memory_context="=== HARNESS MEMORY ===")
+        await orchestrator.run_planner(memory_context="=== HARNESS MEMORY ===")
+
+    assert task.custom_instructions == "operator note"
+    assert mock_plan.await_args.kwargs["memory_context"] == "=== HARNESS MEMORY ==="

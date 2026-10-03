@@ -57,7 +57,7 @@ class PlannerAgent:
         self.task = task
         self.model = settings.planner_model
 
-    async def execute(self) -> str:
+    async def execute(self, memory_context: str = "") -> str:
         run_id = self.sandbox.run_id or "run-1"
         await event_bus.emit_log(
             task_id=self.task.id,
@@ -75,6 +75,8 @@ Description:
 Custom User Instructions:
 {self.task.custom_instructions or 'None'}
 """
+        if memory_context:
+            task_prompt += f"\n{memory_context}\n"
 
         plan = ""
         # 1. Attempt autonomous agy CLI session inside sandbox

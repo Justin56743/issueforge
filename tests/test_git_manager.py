@@ -125,3 +125,29 @@ async def test_repo_that_tracks_its_own_plan_still_commits_plan_changes(tmp_path
     assert "PLAN.md" in committed
 
     sandbox.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_diff_includes_new_files_and_commit_skips_agent_skills():
+    """A Coder that only creates files must still produce a diff, and the skill files
+    copied into the sandbox for agy must never reach the commit."""
+    sandbox = NativeSandbox("test-git-new-files")
+    sandbox.setup()
+    await sandbox.run_command("git init -q && git commit -q --allow-empty -m init", emit_events=False)
+    await sandbox.run_command('git config user.name "Test" && git config user.email "t@t.com"', emit_events=False)
+    git_mgr = GitRepoManager(sandbox, "https://github.com/test/repo.git", working_branch="forge/t")
+    git_mgr._exclude_agent_artifacts()
+
+    sandbox.write_file(".agents/skills/ponytail/SKILL.md", "skill\n")
+    sandbox.write_file("brand_new.py", "print('new')\n")
+
+    stat, diff_text, _ = await git_mgr.get_diff()
+    assert "brand_new.py" in stat
+    assert "+print('new')" in diff_text
+    assert ".agents" not in diff_text
+
+    assert await git_mgr.commit_changes("feat: add module")
+    committed = await sandbox.run_command("git show --name-only --format= HEAD", emit_events=False)
+    assert committed.stdout.split() == ["brand_new.py"]
+
+    sandbox.cleanup()

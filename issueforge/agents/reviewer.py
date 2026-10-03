@@ -164,7 +164,7 @@ Failed Tests: {test_result.failed_tests}
                 if parsed:
                     summary = ReviewSummary(
                         summary=parsed.get("summary", "Implemented changes for task."),
-                        risk_assessment=parsed.get("risk_assessment", "Low"),
+                        risk_assessment=parsed.get("risk_assessment", "Unknown"),
                         test_verification=parsed.get("test_verification", f"Verified ({test_result.test_runner})"),
                         files_changed=parsed.get("files_changed", []),
                         suggested_commit_message=parsed.get("suggested_commit_message", f"feat: solve {self.task.title}"),
@@ -208,7 +208,7 @@ Failed Tests: {test_result.failed_tests}
             if parsed:
                 summary = ReviewSummary(
                     summary=parsed.get("summary", "Implemented changes for task."),
-                    risk_assessment=parsed.get("risk_assessment", "Low"),
+                    risk_assessment=parsed.get("risk_assessment", "Unknown"),
                     test_verification=parsed.get("test_verification", "All tests passed."),
                     files_changed=parsed.get("files_changed", []),
                     suggested_commit_message=parsed.get("suggested_commit_message", f"feat: solve {self.task.title}"),
@@ -235,10 +235,11 @@ Failed Tests: {test_result.failed_tests}
                 run_id=run_id
             )
 
-        # Default fallback summary
+        # Default fallback summary. No reviewer ran, so the risk is unassessed, not low:
+        # the operator reads this field when deciding whether to push.
         summary = ReviewSummary(
             summary=f"Completed automated implementation for: {self.task.title}",
-            risk_assessment="Low",
+            risk_assessment="Unknown (automated review unavailable)",
             test_verification=f"Automated test runner executed. Passed: {test_result.passed}",
             files_changed=[],
             suggested_commit_message=f"feat: resolve {self.task.title}",

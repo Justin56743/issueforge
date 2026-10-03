@@ -44,6 +44,8 @@ class MergeConflictResolver:
         self.model = settings.reviewer_model
         self.resolved_files: List[str] = []
         self._target_branch: str = ""
+        # Set when the probe could not tell whether the merge is clean.
+        self.probe_error: Optional[str] = None
 
     # ------------------------------------------------------------------ helpers
 
@@ -89,7 +91,13 @@ class MergeConflictResolver:
         conflicted files can be read; callers must finish via `execute_resolution_pipeline`
         or `abort_merge`.
         """
-        await self._git(f"git fetch origin {shlex.quote(target_branch)}")
+        self.probe_error = None
+        fetch = await self._git(f"git fetch origin {shlex.quote(target_branch)}")
+        if not fetch.success:
+            # Merging a stale origin/<target> would "pass" against code that is not
+            # what the PR will actually merge into.
+            self.probe_error = f"could not fetch `{target_branch}`: {(fetch.stderr or fetch.stdout).strip()[:300]}"
+            return False
         result = await self._git(f"git merge --no-commit --no-ff {shlex.quote('origin/' + target_branch)}")
         combined = f"{result.stdout}\n{result.stderr}"
 
@@ -99,8 +107,9 @@ class MergeConflictResolver:
 
         if not result.success:
             # Refused for some other reason (unrelated histories, missing ref, dirty tree).
-            # Not a conflict we can resolve; clean up and report no conflicts.
+            # Not a conflict we can resolve, and not proof of a clean merge either.
             logger.info("Merge probe against origin/%s did not apply: %s", target_branch, combined.strip()[:300])
+            self.probe_error = combined.strip()[:300]
             await self.abort_merge()
             return False
 
@@ -249,12 +258,17 @@ class MergeConflictResolver:
 
         Returns (ok, message). `ok` is True when the branch is safe to push — either it
         merged cleanly or every conflict was reconciled and verified. Any failure aborts
-        the merge, so the caller's branch is always left in its pre-merge state.
+        the merge, so the caller's branch is always left in its pre-merge state. When
+        `resolved_files` is non-empty the branch now holds LLM-written code, and the caller
+        must get it re-confirmed before pushing.
         """
         self.resolved_files = []
         self._target_branch = target_branch
 
         if not await self.probe_for_conflicts(target_branch):
+            if self.probe_error:
+                # Fail closed: an unverified merge is not a clean one.
+                return False, f"Merge check against `{target_branch}` could not run: {self.probe_error}"
             return True, f"Pre-flight merge check clean against `{target_branch}`."
 
         conflicted = await self.list_conflicted_files()

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from issueforge.config import settings
 from issueforge.core.events import event_bus
+from issueforge.core.sandbox import NativeSandbox
 from issueforge.core.models import AgentRole, EventType
 
 
@@ -316,7 +317,11 @@ class AgySessionRunner:
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self.sandbox_dir),
             env=env,
+            # Own process group, registered with the task, so cancelling the task kills
+            # agy and every tool command it spawned rather than leaving them editing.
+            start_new_session=True,
         )
+        NativeSandbox.register_process(self.task_id, proc)
 
         final_response_text = ""
         success = False
@@ -477,7 +482,7 @@ class AgySessionRunner:
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
-            proc.kill()
+            NativeSandbox.kill_process_group(proc)
             await term_session.broadcast_text(f"\r\n\x1b[1;31m⏱️ {self.role.value} agent timed out after {timeout_seconds}s.\x1b[0m\r\n")
             await event_bus.emit_log(
                 task_id=self.task_id,
@@ -488,6 +493,9 @@ class AgySessionRunner:
             )
             return False, "Timed out."
         finally:
+            # Also covers CancelledError: an operator cancel must not leave agy running.
+            NativeSandbox.kill_process_group(proc)
+            NativeSandbox.unregister_process(self.task_id, proc)
             if log_handle:
                 log_handle.close()
 

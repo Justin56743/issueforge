@@ -241,3 +241,46 @@ def test_agy_session_runner_model_normalization():
     assert agy_path.startswith(str(Path.home())) or not agy_path.startswith("/home/")
     assert agy_path.endswith("agy")
 
+
+
+def _pid_alive(pid: int) -> bool:
+    """True while pid exists and is not a zombie."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_an_agy_session_kills_agy_and_its_children(tmp_path):
+    """Cancel used to stop only the asyncio task: agy (and the commands it spawned) kept
+    running and editing the workspace after the operator pressed Stop."""
+    pid_file = tmp_path / "child.pid"
+    fake_agy = tmp_path / "agy"
+    fake_agy.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {pid_file}\nwait\n")
+    fake_agy.chmod(0o755)
+
+    runner = AgySessionRunner(
+        task_id="test-agy-cancel", run_id="run-1",
+        sandbox_dir=tmp_path / "ws", role=AgentRole.CODER,
+    )
+    with patch.object(AgySessionRunner, "get_agy_path", return_value=str(fake_agy)):
+        session = asyncio.create_task(runner.run_prompt("sys", "task", timeout_seconds=30))
+        for _ in range(100):
+            if pid_file.exists() and pid_file.read_text().strip():
+                break
+            await asyncio.sleep(0.05)
+        child_pid = int(pid_file.read_text())
+        assert "test-agy-cancel" in NativeSandbox._active_processes
+
+        session.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await session
+
+    for _ in range(40):
+        if not _pid_alive(child_pid):
+            break
+        await asyncio.sleep(0.05)
+    assert not _pid_alive(child_pid)
+    assert "test-agy-cancel" not in NativeSandbox._active_processes

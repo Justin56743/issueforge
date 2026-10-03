@@ -1,9 +1,9 @@
 import asyncio
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from issueforge.agents.engine import agent_engine
+from issueforge.agents.engine import PAUSED_RUN_STATUSES, agent_engine
 from issueforge.config import settings
 from issueforge.core.database import find_existing_task, get_task, save_event, save_task
 from issueforge.core.events import event_bus
@@ -110,18 +110,32 @@ class TaskQueue:
 
         return task
 
+    @staticmethod
+    def _close_paused_run(task: Task) -> None:
+        """A run left waiting at a HITL gate ends with its task; otherwise a later retry
+        would resume it instead of starting a fresh attempt."""
+        if task.runs and task.runs[-1].status in PAUSED_RUN_STATUSES:
+            task.runs[-1].status = TaskStatus.CANCELLED
+            task.runs[-1].completed_at = utc_now()
+
+    def is_running(self, task_id: str) -> bool:
+        return task_id in self._running_tasks and not self._running_tasks[task_id].done()
+
     def start_execution_background(self, task_id: str) -> asyncio.Task:
         """Launch the multi-LLM pipeline in the background."""
-        if task_id in self._running_tasks and not self._running_tasks[task_id].done():
+        return self._launch(task_id, agent_engine.execute_task_pipeline)
+
+    def _launch(self, task_id: str, job: Callable[[str], Awaitable[Any]]) -> asyncio.Task:
+        if self.is_running(task_id):
             return self._running_tasks[task_id]
 
-        loop_task = asyncio.create_task(self._run_task_safe(task_id))
+        loop_task = asyncio.create_task(self._run_task_safe(task_id, job))
         self._running_tasks[task_id] = loop_task
         return loop_task
 
-    async def _run_task_safe(self, task_id: str) -> None:
+    async def _run_task_safe(self, task_id: str, job: Callable[[str], Awaitable[Any]]) -> None:
         try:
-            await agent_engine.execute_task_pipeline(task_id)
+            await job(task_id)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -155,6 +169,7 @@ class TaskQueue:
         task.status = TaskStatus.CANCELLED
         task.error_message = cancel_reason
         task.completed_at = utc_now()
+        self._close_paused_run(task)
         await save_task(task)
 
         # 4. Emit log event
@@ -171,6 +186,10 @@ class TaskQueue:
         task = await get_task(task_id)
         if not task:
             return None
+        # A stale Approve button (Telegram cards go to every allowlisted user) must not
+        # relaunch a task that already ran. Retrying is retry_task's job.
+        if task.status != TaskStatus.PENDING_APPROVAL:
+            raise ValueError(f"Task {task_id} is {task.status.value}; only a task pending approval can be approved.")
 
         task.status = TaskStatus.APPROVED
         if custom_instructions:
@@ -225,6 +244,7 @@ class TaskQueue:
         task.status = TaskStatus.REJECTED
         task.error_message = reason or "Rejected by user."
         task.completed_at = utc_now()
+        self._close_paused_run(task)
         await save_task(task)
 
         await event_bus.emit_log(
@@ -235,12 +255,21 @@ class TaskQueue:
         return task
 
     async def confirm_and_push(self, task_id: str, target_branch: Optional[str] = None) -> Optional[Task]:
-        """User confirms changes; push branch and open PR."""
+        """User confirms changes; push branch and open PR in the background.
+
+        Tracked like a pipeline run, so Stop can cancel it and a double click (or a stale
+        Confirm button) cannot push twice.
+        """
         task = await get_task(task_id)
         if not task:
             return None
+        if task.status != TaskStatus.AWAITING_CONFIRMATION:
+            raise ValueError(f"Task {task_id} is {task.status.value}; only a task awaiting confirmation can be pushed.")
+        if self.is_running(task_id):
+            raise ValueError(f"Task {task_id} is still busy; try again in a moment.")
 
-        return await agent_engine.push_and_create_pr(task_id, target_branch=target_branch)
+        self._launch(task_id, lambda tid: agent_engine.push_and_create_pr(tid, target_branch=target_branch))
+        return task
 
     async def set_target_branch(self, task_id: str, branch_name: str) -> Optional[Task]:
         """Set the target branch explicitly for a task."""

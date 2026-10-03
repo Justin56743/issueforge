@@ -233,12 +233,13 @@ async def test_llm_exception_aborts_cleanly(conflicted_repo):
     assert _head(wp) == head_before
 
 
-async def test_unknown_target_branch_does_not_hang_or_corrupt(clean_repo):
+async def test_unknown_target_branch_fails_closed_without_corrupting(clean_repo):
     sandbox, wp = clean_repo
     head_before = _head(wp)
-    ok, _ = await MergeConflictResolver(sandbox).execute_resolution_pipeline("no-such-branch")
-    # No conflict can be detected against a branch that does not exist; must stay clean.
-    assert ok is True
+    ok, message = await MergeConflictResolver(sandbox).execute_resolution_pipeline("no-such-branch")
+    # A merge that could not be checked must block the push, not pass as "clean".
+    assert ok is False
+    assert "could not run" in message
     assert _is_clean(wp)
     assert _head(wp) == head_before
 

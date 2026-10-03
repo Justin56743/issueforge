@@ -18,7 +18,10 @@ logger = logging.getLogger("issueforge.git.repo_manager")
 # never reach `git add -A`. They go into `.git/info/exclude` rather than a filter
 # at commit time: that path ignores them only while they are *untracked*, so a
 # repository that genuinely versions its own PLAN.md still diffs and commits it.
-AGENT_ARTIFACT_FILES = ("PLAN.md", "TEST_RESULTS.md", "REVIEW.md")
+# `.agents/` holds the skill files copied into every sandbox for the agy CLI.
+AGENT_ARTIFACT_FILES = ("PLAN.md", "TEST_RESULTS.md", "REVIEW.md", ".agents/")
+# Created anywhere in the tree when the Tester installs the project's dependencies.
+DEPENDENCY_ARTIFACTS = ("node_modules/", "*.egg-info/")
 
 
 class GitRepoManager:
@@ -92,7 +95,8 @@ class GitRepoManager:
             exclude_file.parent.mkdir(parents=True, exist_ok=True)
             existing = exclude_file.read_text(encoding="utf-8") if exclude_file.exists() else ""
             lines = {line.strip() for line in existing.splitlines()}
-            missing = [f"/{name}" for name in AGENT_ARTIFACT_FILES if f"/{name}" not in lines]
+            wanted = [f"/{name}" for name in AGENT_ARTIFACT_FILES] + list(DEPENDENCY_ARTIFACTS)
+            missing = [entry for entry in wanted if entry not in lines]
             if not missing:
                 return
             block = "" if not existing or existing.endswith("\n") else "\n"
@@ -168,6 +172,11 @@ class GitRepoManager:
         Get git diff against base branch or HEAD.
         Returns (diff_stat, full_diff_text, list_of_file_diffs).
         """
+        # `git diff HEAD` ignores untracked files, so files the Coder created would be
+        # missing from the diff the Reviewer and operator see. Intent-to-add puts them
+        # in the index as empty entries without staging their content.
+        await self.sandbox.run_command("git add -A --intent-to-add")
+
         # Diff stat
         stat_res = await self.sandbox.run_command("git diff --stat HEAD")
         diff_stat = stat_res.stdout.strip()
@@ -217,7 +226,9 @@ class GitRepoManager:
         auth_url = self._get_authenticated_url()
         # Set origin URL with auth
         await self.sandbox.run_command(f"git remote set-url origin {shlex.quote(auth_url)}")
-        res = await self.sandbox.run_command(f"git push -u origin {shlex.quote(self.working_branch)} --force")
+        # Lease, not --force: overwrite only our own earlier push of this branch, never
+        # commits someone else pushed to it since the clone.
+        res = await self.sandbox.run_command(f"git push -u origin {shlex.quote(self.working_branch)} --force-with-lease")
         return res.success
 
     async def abort_merge(self) -> bool:

@@ -199,7 +199,10 @@ async def get_task_api(task_id: str):
 
 @router.post("/api/tasks/{task_id}/approve")
 async def approve_task_api(task_id: str, custom_instructions: Optional[str] = None):
-    task = await task_queue.approve_task(task_id, custom_instructions=custom_instructions)
+    try:
+        task = await task_queue.approve_task(task_id, custom_instructions=custom_instructions)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
     return {"status": "approved", "task": task}
@@ -304,10 +307,13 @@ async def toggle_task_subtask_api(task_id: str, subtask_id: str):
 @router.post("/api/tasks/{task_id}/confirm")
 async def confirm_task_api(task_id: str, req: Optional[ConfirmTaskRequest] = None):
     target_branch = req.target_branch if req else None
-    task = await task_queue.confirm_and_push(task_id, target_branch=target_branch)
+    try:
+        task = await task_queue.confirm_and_push(task_id, target_branch=target_branch)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    return {"status": "confirmed_and_pushed", "task": task}
+    return {"status": "pushing", "task": task}
 
 
 @router.post("/api/tasks/{task_id}/target-branch")

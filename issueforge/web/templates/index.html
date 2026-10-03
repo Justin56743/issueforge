@@ -166,7 +166,7 @@
                                 Confirm & Push
                             </button>
                         {% elif task.status.value == "CANCELLED" or task.status.value == "FAILED" %}
-                            <button onclick="approveTask('{{ task.id }}')" class="bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white text-xs px-2.5 py-1.5 rounded font-medium transition">
+                            <button onclick="retryTask('{{ task.id }}')" class="bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white text-xs px-2.5 py-1.5 rounded font-medium transition">
                                 Retry
                             </button>
                         {% endif %}

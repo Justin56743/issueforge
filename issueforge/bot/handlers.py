@@ -212,7 +212,11 @@ async def handle_approve_callback(query: CallbackQuery):
         await query.answer("Task not found.", show_alert=True)
         return
 
-    await task_queue.approve_task(task_id)
+    try:
+        await task_queue.approve_task(task_id)
+    except ValueError as e:
+        await query.answer(str(e), show_alert=True)
+        return
     await query.answer("Task approved! Codespace launched.")
     if query.message:
         await query.message.edit_text(
@@ -264,6 +268,12 @@ async def handle_confirm_callback(query: CallbackQuery):
         await query.answer("Task not found.", show_alert=True)
         return
 
+    try:
+        await task_queue.confirm_and_push(task_id)
+    except ValueError as e:
+        await query.answer(str(e), show_alert=True)
+        return
+
     target = task.selected_target_branch or task.base_branch or "main"
     await query.answer(f"Pushing changes targeting {target}...")
     if query.message:
@@ -273,8 +283,6 @@ async def handle_confirm_callback(query: CallbackQuery):
             f"Committing changes, pushing branch <code>{task.working_branch}</code> and creating Pull Request...",
             parse_mode="HTML"
         )
-
-    await task_queue.confirm_and_push(task_id)
 
 
 @router.callback_query(F.data.startswith("pick_branch:"))
@@ -408,7 +416,11 @@ async def handle_user_text_reply(message: Message):
         task_id = state.get("task_id")
 
         if action == "custom_prompt":
-            await task_queue.approve_task(task_id, custom_instructions=user_text)
+            try:
+                await task_queue.approve_task(task_id, custom_instructions=user_text)
+            except ValueError as e:
+                await message.reply(str(e))
+                return
             await message.reply(
                 f"✅ <b>Custom Instructions Recorded!</b>\nStarting task <code>{task_id}</code> with your instructions:\n<i>{user_text}</i>",
                 parse_mode="HTML"
@@ -512,7 +524,11 @@ async def handle_user_text_reply(message: Message):
 
         sub_action = decision.get("task_action")
         if matched_task and sub_action == "APPROVE":
-            await task_queue.approve_task(matched_task.id)
+            try:
+                await task_queue.approve_task(matched_task.id)
+            except ValueError as e:
+                await typing_msg.edit_text(str(e))
+                return
             await typing_msg.edit_text(
                 f"✅ <b>Orchestrator:</b> Approved and launched codespace for task <code>{matched_task.id}</code> ({matched_task.title}).",
                 parse_mode="HTML"
@@ -531,7 +547,11 @@ async def handle_user_text_reply(message: Message):
             )
         elif matched_task and sub_action == "PUSH":
             t_branch = decision.get("target_branch") or matched_task.selected_target_branch
-            await task_queue.confirm_and_push(matched_task.id, target_branch=t_branch)
+            try:
+                await task_queue.confirm_and_push(matched_task.id, target_branch=t_branch)
+            except ValueError as e:
+                await typing_msg.edit_text(str(e))
+                return
             await typing_msg.edit_text(
                 f"🚀 <b>Orchestrator:</b> Pushing changes and opening PR targeting <code>{t_branch}</code> for task <code>{matched_task.id}</code>.",
                 parse_mode="HTML"

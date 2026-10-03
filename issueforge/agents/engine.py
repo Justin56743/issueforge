@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import shlex
 from datetime import datetime
 from typing import Optional
 
@@ -22,6 +23,10 @@ from issueforge.vault.canvas_telemetry import stage_for_status
 from issueforge.vault.canvas_watcher import canvas_watchers
 
 logger = logging.getLogger("issueforge.agents.engine")
+
+# Run statuses that mean "waiting for the operator", not "finished". A pipeline launched
+# while the latest run is in one of these resumes that run.
+PAUSED_RUN_STATUSES = (TaskStatus.AWAITING_BRANCH_SELECTION, TaskStatus.AWAITING_INPUT)
 
 
 class IssueforgeAgentEngine:
@@ -108,18 +113,26 @@ class IssueforgeAgentEngine:
         if not task:
             raise ValueError(f"Task {task_id} not found.")
 
-        # Allocate run number and isolate in a dedicated sandbox attempt folder
-        attempt_number = len(task.runs) + 1
-        run_id = f"run-{attempt_number}"
-
-        current_run = PipelineRun(
-            run_id=run_id,
-            attempt_number=attempt_number,
-            status=TaskStatus.PLANNING,
-            started_at=utc_now(),
-            sandbox_dir=f"sandboxes/{run_id}"
-        )
-        task.runs.append(current_run)
+        last_run = task.runs[-1] if task.runs else None
+        if last_run and last_run.status in PAUSED_RUN_STATUSES:
+            # Resuming from a HITL pause (branch gate or question): continue in the same
+            # run and workspace instead of recording a phantom attempt and cloning again.
+            current_run = last_run
+            current_run.status = TaskStatus.PLANNING
+            attempt_number = current_run.attempt_number
+            run_id = current_run.run_id
+        else:
+            # Allocate run number and isolate in a dedicated sandbox attempt folder
+            attempt_number = len(task.runs) + 1
+            run_id = f"run-{attempt_number}"
+            current_run = PipelineRun(
+                run_id=run_id,
+                attempt_number=attempt_number,
+                status=TaskStatus.PLANNING,
+                started_at=utc_now(),
+                sandbox_dir=f"sandboxes/{run_id}"
+            )
+            task.runs.append(current_run)
         task.active_run_id = run_id
         await save_task(task)
         await TaskDossierManager.sync_dossier_async(task)
@@ -564,6 +577,30 @@ class IssueforgeAgentEngine:
             await canvas_watchers.stop(task.id)
 
 
+    async def _fail_push(self, task: Task, message: str, stage: str) -> Task:
+        """Record a failed push on the task and its run, and tell the operator."""
+        task.status = TaskStatus.FAILED
+        task.error_message = message
+        for r in task.runs:
+            if r.run_id == task.active_run_id:
+                r.status = TaskStatus.FAILED
+                r.failure_stage = stage
+                r.error_message = message
+                r.completed_at = utc_now()
+                break
+        await save_task(task)
+        await TaskDossierManager.sync_dossier_async(task)
+        await canvas_mark(task, CanvasStage.MERGE, "FAILED", message)
+        await event_bus.emit_log(
+            task_id=task.id,
+            message=f"🛑 {message}",
+            event_type=EventType.ERROR,
+            run_id=task.active_run_id,
+        )
+        from issueforge.bot.telegram_bot import telegram_manager
+        await telegram_manager.send_task_failure(task)
+        return task
+
     async def push_and_create_pr(self, task_id: str, target_branch: Optional[str] = None) -> Task:
         """Commit, push branch to remote, and open PR / MR targeted against selected branch."""
         task = await get_task(task_id)
@@ -575,14 +612,6 @@ class IssueforgeAgentEngine:
 
         effective_target = task.selected_target_branch or task.base_branch or "main"
 
-        sandbox = NativeSandbox(task.id, run_id=task.active_run_id)
-        git_mgr = GitRepoManager(
-            sandbox=sandbox,
-            repo_url=task.repo_url,
-            base_branch=effective_target,
-            working_branch=task.working_branch,
-        )
-
         task.status = TaskStatus.PUSHING
         await save_task(task)
         TaskDossierManager.sync_dossier(task)
@@ -592,6 +621,23 @@ class IssueforgeAgentEngine:
             message=f"🚀 Pushing changes and creating PR targeting `{effective_target}`...",
             event_type=EventType.STATUS_CHANGE,
             run_id=task.active_run_id
+        )
+        try:
+            return await self._push(task, effective_target)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Without this a crash mid-push left the task in PUSHING forever.
+            logger.exception("Push failed for %s", task.id)
+            return await self._fail_push(task, f"Push failed: {e}", "PUSHING")
+
+    async def _push(self, task: Task, effective_target: str) -> Task:
+        sandbox = NativeSandbox(task.id, run_id=task.active_run_id)
+        git_mgr = GitRepoManager(
+            sandbox=sandbox,
+            repo_url=task.repo_url,
+            base_branch=effective_target,
+            working_branch=task.working_branch,
         )
 
         commit_msg = (
@@ -613,7 +659,8 @@ class IssueforgeAgentEngine:
             pr_body = f"{pr_body}\n\nCloses #{task.issue_number}"
 
         # 1. Commit changes
-        await git_mgr.commit_changes(commit_msg)
+        if not await git_mgr.commit_changes(commit_msg):
+            return await self._fail_push(task, "Failed to commit the changes in the sandbox.", "GIT")
 
         # AST Merge Guard — the target branch may have advanced while the agents worked.
         # Runs here because it needs a clean working tree, which only exists after commit.
@@ -621,20 +668,14 @@ class IssueforgeAgentEngine:
         resolver = MergeConflictResolver(sandbox=sandbox, task=task)
         merge_ok, merge_detail = await resolver.execute_resolution_pipeline(effective_target)
         if not merge_ok:
-            task.status = TaskStatus.FAILED
-            task.error_message = f"Merge guard: {merge_detail}"
-            await save_task(task)
-            await TaskDossierManager.sync_dossier_async(task)
-            await canvas_mark(task, CanvasStage.MERGE, "FAILED", merge_detail)
-            await event_bus.emit_log(
-                task_id=task.id,
-                message=f"🛑 {task.error_message}",
-                event_type=EventType.ERROR,
-                run_id=task.active_run_id,
-            )
-            from issueforge.bot.telegram_bot import telegram_manager
-            await telegram_manager.send_task_failure(task)
-            return task
+            return await self._fail_push(task, f"Merge guard: {merge_detail}", "MERGE_CONFLICT")
+
+        if resolver.resolved_files:
+            # The resolver committed LLM-written code the operator never approved. Show
+            # what the PR will now contain and ask again; the next confirm finds the
+            # target already merged and pushes.
+            return await self._request_merge_reconfirmation(task, sandbox, effective_target, merge_detail, resolver.resolved_files)
+
         await canvas_mark(task, CanvasStage.MERGE, "DONE", merge_detail)
         await event_bus.emit_log(
             task_id=task.id,
@@ -643,15 +684,11 @@ class IssueforgeAgentEngine:
             run_id=task.active_run_id,
         )
 
-        pushed = await git_mgr.push_working_branch()
-        if not pushed:
-            task.status = TaskStatus.FAILED
-            task.error_message = "Failed to push working branch to remote git repository."
-            await save_task(task)
-            TaskDossierManager.sync_dossier(task)
-            return task
+        if not await git_mgr.push_working_branch():
+            return await self._fail_push(task, "Failed to push working branch to remote git repository.", "GIT")
 
-        # 4. Create Pull/Merge Request
+        # 4. Create Pull/Merge Request. The issue is closed by `Closes #N` when the PR is
+        # merged, not here: pushing a branch is not the change landing.
         pr_url = None
         if task.platform == PlatformType.GITHUB:
             owner, repo = self.github_client.parse_repo_owner_and_name(task.repo_name)
@@ -669,19 +706,6 @@ class IssueforgeAgentEngine:
             # Update labels if suggested
             if task.review_summary and task.review_summary.suggested_labels and task.issue_number:
                 await self.github_client.update_issue_labels(owner, repo, task.issue_number, task.review_summary.suggested_labels)
-            # Close remote issue
-            if task.issue_number:
-                try:
-                    closed = await self.github_client.close_issue(owner, repo, task.issue_number)
-                    if closed:
-                        await event_bus.emit_log(
-                            task_id=task.id,
-                            run_id=task.active_run_id,
-                            message=f"🔒 Closed remote GitHub Issue #{task.issue_number}.",
-                            event_type=EventType.STATUS_CHANGE
-                        )
-                except Exception as ex:
-                    logger.warning(f"Failed to close GitHub issue #{task.issue_number}: {ex}")
 
         elif task.platform == PlatformType.GITLAB:
             project_path = self.gitlab_client.parse_project_path(task.repo_url)
@@ -698,19 +722,6 @@ class IssueforgeAgentEngine:
             # Update labels if suggested
             if task.review_summary and task.review_summary.suggested_labels and task.issue_number:
                 await self.gitlab_client.update_issue_metadata(project_path, task.issue_number, labels=task.review_summary.suggested_labels)
-            # Close remote issue
-            if task.issue_number:
-                try:
-                    closed = await self.gitlab_client.close_issue(project_path, task.issue_number)
-                    if closed:
-                        await event_bus.emit_log(
-                            task_id=task.id,
-                            run_id=task.active_run_id,
-                            message=f"🔒 Closed remote GitLab Issue #{task.issue_number}.",
-                            event_type=EventType.STATUS_CHANGE
-                        )
-                except Exception as ex:
-                    logger.warning(f"Failed to close GitLab issue #{task.issue_number}: {ex}")
 
         task.pr_url = pr_url or f"{task.repo_url}/tree/{task.working_branch}"
         task.status = TaskStatus.COMPLETED
@@ -744,6 +755,33 @@ class IssueforgeAgentEngine:
         from issueforge.bot.telegram_bot import telegram_manager
         await telegram_manager.send_task_completed(task)
 
+        return task
+
+    async def _request_merge_reconfirmation(
+        self, task: Task, sandbox: NativeSandbox, target: str, merge_detail: str, resolved_files: list
+    ) -> Task:
+        ref = shlex.quote(f"origin/{target}")
+        stat = await sandbox.run_command(f"git diff --stat {ref} HEAD", emit_events=False)
+        full = await sandbox.run_command(f"git diff -U3 {ref} HEAD", emit_events=False)
+        task.diff_stat = stat.stdout.strip()
+        task.diff_content = full.stdout
+        task.status = TaskStatus.AWAITING_CONFIRMATION
+        await save_task(task)
+        await TaskDossierManager.sync_dossier_async(task)
+        message = (
+            f"🔀 {merge_detail} The branch now contains LLM-resolved merge code that was not "
+            f"part of the reviewed diff — review the updated diff and confirm again to push."
+        )
+        await canvas_mark(task, CanvasStage.MERGE, "AWAITING_CONFIRMATION", message)
+        await event_bus.emit_log(
+            task_id=task.id,
+            message=message,
+            event_type=EventType.STATUS_CHANGE,
+            data={"kind": "merge_resolution", "resolved_files": resolved_files},
+            run_id=task.active_run_id,
+        )
+        from issueforge.bot.telegram_bot import telegram_manager
+        await telegram_manager.send_review_confirmation(task)
         return task
 
 
